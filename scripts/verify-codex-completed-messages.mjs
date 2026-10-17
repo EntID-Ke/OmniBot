@@ -3,6 +3,7 @@
 import {readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 const [cliDirectory, fixtureDirectory] = process.argv.slice(2);
 assert(cliDirectory && fixtureDirectory, 'Usage: node scripts/verify-codex-completed-messages.mjs CLI_DIRECTORY FIXTURE_DIRECTORY');
@@ -21,9 +22,9 @@ for (let i = 0; i < 2; i++) {
   if (i === 0) firstPatchedSource = source;
   else assert.equal(source, firstPatchedSource, 'Repeated installation changed the patched source');
 }
-for (const scenario of ['completed-text-only', 'partial-text', 'success', 'failure', 'plan']) {
+for (const scenario of ['completed-text-only', 'partial-text', 'success', 'failure', 'plan', 'commentary', 'commentary-completed-only']) {
   const result = spawnSync(process.execPath, [
-    new URL('./verify-installed-harness-adapters.mjs', import.meta.url).pathname,
+    fileURLToPath(new URL('./verify-installed-harness-adapters.mjs', import.meta.url)),
     cliDirectory, fixtureDirectory, 'codex', scenario,
   ], {stdio: 'inherit'});
   assert.equal(result.status, 0, `Codex ${scenario} failed`);

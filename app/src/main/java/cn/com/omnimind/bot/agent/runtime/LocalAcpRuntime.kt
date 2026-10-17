@@ -1185,6 +1185,9 @@ internal class LocalAcpRuntime(
             "collaborationMode/list" -> listCollaborationModes(canonicalArgs)
             "review/start" -> startReview(canonicalArgs)
             "authenticate", "auth/authenticate" -> authenticateAcp(canonicalArgs)
+            // Released codex-acp 1.10.0 implementation extension, forwarded
+            // unchanged on ACP. It returns account metadata, never tokens.
+            "authentication/status" -> sendRawAgentRequest("authentication/status", emptyMap())
             "logout", "auth/logout" -> logoutAcp(canonicalArgs)
             "providers/list", "auth/providers/list" -> listAcpProviders(canonicalArgs)
             "providers/set", "auth/providers/set" -> setAcpProvider(canonicalArgs)
@@ -1451,6 +1454,12 @@ internal class LocalAcpRuntime(
         val methodId = args.stringValue("methodId")
             ?: args.stringValue("method")
             ?: throw IllegalArgumentException("methodId is required")
+        check(!hasActiveTurns()) { "Finish or stop the active task before signing in." }
+        activeProfile?.let(AcpHarnessAdapters::forProfile)
+            ?.validateAuthenticationMethod(methodId, activeLaunchEnvironment)
+        require(requireAgentInfo().authMethods.any { it.id.value == methodId }) {
+            "The installed ACP adapter does not advertise this authentication method. Reinstall a supported version."
+        }
         return sendRawAgentRequest(
             method = "authenticate",
             params = linkedMapOf<String, Any?>(
@@ -1460,8 +1469,10 @@ internal class LocalAcpRuntime(
         )
     }
 
-    private suspend fun logoutAcp(args: Map<String, Any?>): Map<String, Any?> =
-        sendRawAgentRequest("logout", args.withoutLocalIds())
+    private suspend fun logoutAcp(args: Map<String, Any?>): Map<String, Any?> {
+        check(!hasActiveTurns()) { "Finish or stop the active task before signing out." }
+        return sendRawAgentRequest("logout", args.withoutLocalIds())
+    }
 
     private suspend fun listAcpProviders(args: Map<String, Any?>): Map<String, Any?> =
         sendRawAgentRequest("providers/list", args.withoutLocalIds())
@@ -1529,6 +1540,8 @@ internal class LocalAcpRuntime(
         LinkedHashMap(this).apply {
             remove("threadId")
             remove("conversationId")
+            remove("agentId")
+            remove("localRuntime")
         }
 
     private suspend fun resolveSessionForMutation(
@@ -3832,6 +3845,25 @@ internal class LocalAcpRuntime(
                     markTurnTiming(threadId, resolvedId, "first_tool")
                 else -> Unit
             }
+            if (activeLaunchEnvironment["OMNIBOT_ACP_DIAGNOSTICS"] == "1") {
+                val toolId = when (update) {
+                    is SessionUpdate.ToolCall -> update.toolCallId.value
+                    is SessionUpdate.ToolCallUpdate -> update.toolCallId.value
+                    else -> null
+                }
+                val toolStatus = when (update) {
+                    is SessionUpdate.ToolCall -> update.status
+                    is SessionUpdate.ToolCallUpdate -> update.status
+                    else -> null
+                }
+                if (toolId != null && toolStatus != null) {
+                    // Opaque identity only; never record tool arguments, paths,
+                    // command output, prompt text, or credentials.
+                    val key = toolId.hashCode().toUInt().toString(16)
+                    val terminal = toolStatus == ToolCallStatus.COMPLETED || toolStatus == ToolCallStatus.FAILED
+                    markTurnTiming(threadId, resolvedId, "tool_${key}_${if (terminal) "end" else "start"}")
+                }
+            }
         }
 
         // A session title is the one update with a side effect of its own.
@@ -4351,6 +4383,17 @@ private class AcpProcessConnection(
             append(" && ")
             append(MANAGED_NPM_PATH_PREFIX)
             append(' ')
+            val unsetKeys = AcpHarnessAdapters.forProfile(profile).environmentKeysToUnset(environment)
+            if (unsetKeys.isNotEmpty()) {
+                require(unsetKeys.all { it.matches(Regex("[A-Z_][A-Z0-9_]*")) })
+                append("unset ")
+                append(unsetKeys.joinToString(" "))
+                append("; umask 077; ")
+            }
+            AcpHarnessAdapters.forProfile(profile).environmentOverridesAfterShell(environment).forEach { (key, value) ->
+                require(key.matches(Regex("[A-Z_][A-Z0-9_]*")))
+                append("export ").append(key).append('=').append(shellQuoteAcp(value)).append("; ")
+            }
             append("exec ")
             append(shellQuoteAcp(profile.command))
             profile.arguments.forEach {

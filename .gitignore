@@ -47,3 +47,27 @@ reports/
 
 # Optional local on-device model checkout is not part of the host app.
 /third_party/omniinfer/
+
+# Local project records, generated deliveries, and private authentication data.
+/docs/development/
+/docs/UPSTREAM_UPDATE.md
+/项目文档.md
+/开发规范文档.md
+/开发文档书写规范.md
+/scripts/check-source-documents.py
+/audit-logs/
+/deliverables/
+/references/
+**/.codex-chatgpt/
+auth.json
+credentials.json
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.apk
+*.bundle

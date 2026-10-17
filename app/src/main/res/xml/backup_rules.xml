@@ -10,6 +10,9 @@
     <exclude domain="sharedpref" path="omni_account_tokens.xml" />
     <!-- User-supplied provider credentials are device-bound and must not be backed up. -->
     <exclude domain="sharedpref" path="omni_model_provider_secrets.xml" />
+        <!-- OAuth files remain on the device; the official Codex runtime owns them. -->
+        <exclude domain="root" path="local/alpine/root/.codex-chatgpt/auth.json" />
+        <exclude domain="root" path="local/ubuntu/root/.codex-chatgpt/auth.json" />
     <!--
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>

@@ -2,6 +2,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ui/services/acp_extension_registry.dart';
 
 void main() {
+  test('released Codex message phases project without exposing reasoning', () {
+    for (final phase in ['commentary', 'final_answer']) {
+      final projection = AcpExtensionRegistry.shared.project({
+        '_meta': {
+          'codex': {'phase': phase},
+        },
+      });
+      expect(projection.presentation['messagePhase'], phase);
+    }
+    final reasoning = AcpExtensionRegistry.shared.project({
+      '_meta': {
+        'codex': {'phase': 'analysis'},
+      },
+    });
+    expect(reasoning.presentation.containsKey('messagePhase'), isFalse);
+    expect(reasoning.extensions['codex'], {'phase': 'analysis'});
+  });
   test('keeps Xiaowan shared presentation metadata compatible', () {
     final projection = AcpExtensionRegistry.shared.project({
       '_meta': {

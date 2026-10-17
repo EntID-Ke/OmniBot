@@ -60,16 +60,16 @@
       "builtIn": true,
       "runtime": {
         "discoveryCommand": "codex",
-        "managedAdapterPackage": "@openai/codex@latest",
+        "managedAdapterPackage": "@openai/codex@0.163.0",
         "managedAdapterPackages": [
-          "@openai/codex@latest",
+          "@openai/codex@0.163.0",
           "@agentclientprotocol/codex-acp@1.10.0"
         ],
         "configAdapterId": "codex",
         "usesSharedProvider": true,
         "terminalPackageId": "codex",
         "managedInstallCommandAsset": "acp/install-codex.sh",
-        "preparationRevision": "codex-acp-1.10.0-message-completion-1-title-model-1"
+        "preparationRevision": "codex-acp-1.10.0-codex-0.163.0-subscription-1"
       }
     },
     {

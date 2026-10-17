@@ -9,7 +9,7 @@ import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {respondHarnessSuccess} from './harness-success-fixture.mjs';
 const [cliDirectory, fixtureDirectory, filter = '', scenario = 'success'] = process.argv.slice(2);
-assert(['success', 'failure', 'completed-text-only', 'partial-text', 'plan', 'conversation'].includes(scenario));
+assert(['success', 'failure', 'completed-text-only', 'partial-text', 'plan', 'conversation', 'commentary', 'commentary-completed-only'].includes(scenario));
 assert(cliDirectory && fixtureDirectory, 'CLI and fixture directories required');
 const bin = resolve(cliDirectory, 'node_modules/.bin');
 const root = await mkdtemp(join(tmpdir(), 'oob-acp-matrix-'));
@@ -21,6 +21,10 @@ for (const filename of cases) {
   if (scenario === 'failure') assert.equal(config.harness, 'codex', 'Failure case currently covers Codex');
   let declaredFailure = false, leakedFailureText = false;
   let assistantText = '';
+  const messagePhases = new Map();
+  const protocolMessages = [];
+  const startedAt = performance.now();
+  let firstTextMs = null;
   const planUpdates = [];
   let planModeApplied = false;
   const turns = [];
@@ -53,6 +57,14 @@ for (const filename of cases) {
       res.end(JSON.stringify({error: {type: 'invalid_request_error', message: 'OOB_PRIVATE_FAILURE_DETAIL'}}));
     } else respondHarnessSuccess(req, res, body, {
       completedTextOnly: scenario === 'completed-text-only', partialText: scenario === 'partial-text',
+      ...(scenario.startsWith('commentary') ? {
+        completedTextOnly: scenario.endsWith('completed-only'),
+        messages: [
+          {phase:'commentary',text:'Checking files.'},
+          {phase:'commentary',text:'Testing results.'},
+          {phase:'final_answer',text:'Done.'},
+        ],
+      } : {}),
       reply: scenario === 'plan' ? '<proposed_plan>\n# OOB_PLAN_OK\n1. Inspect the code.\n2. Run tests.\n</proposed_plan>' : scenario === 'conversation' && turns.length === 1 ? 'FOLLOWUP_OK' : 'OK',
     });
   });
@@ -61,6 +73,8 @@ for (const filename of cases) {
   const rewrite = value => String(value).replaceAll('https://fixture.invalid', base.slice(0, -3)).replaceAll('/root', home);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(OPENAI|ANTHROPIC|CLAUDE|CODEX|KIMI|DEEPSEEK|DSH|OPENCODE|OMNIBOT_.*KEY)/.test(key)));
   Object.assign(env, {HOME: home, XDG_CONFIG_HOME: join(home, '.config'), PATH: `${bin}:${env.PATH}`,
+    NO_PROXY: `${env.NO_PROXY || ''},localhost,127.0.0.1,::1`,
+    no_proxy: `${env.no_proxy || ''},localhost,127.0.0.1,::1`,
     CLAUDE_CONFIG_DIR: join(home, '.claude'), OPENCODE_DISABLE_MODELS_FETCH: 'true',
     ...Object.fromEntries(Object.entries(config.environment).map(([k, v]) => [k, rewrite(v)]))});
   for (const file of config.files) {
@@ -87,6 +101,7 @@ for (const filename of cases) {
     pending += chunk; const lines = pending.split('\n'); pending = lines.pop();
     for (const line of lines) {
       let m; try { m = JSON.parse(line); } catch { continue; }
+      protocolMessages.push(m);
       if (m.params?.update?.sessionUpdate === 'plan_update') {
         foreignSessionOutput ||= m.params.sessionId !== sessionId;
         planUpdates.push(m.params.update);
@@ -95,6 +110,9 @@ for (const filename of cases) {
           m.params.update.content?.type === 'text') {
         foreignSessionOutput ||= m.params.sessionId !== sessionId;
         assistantText += m.params.update.content.text;
+        firstTextMs ??= performance.now() - startedAt;
+        const phase = m.params.update._meta?.codex?.phase;
+        if (phase) messagePhases.set(m.params.update.messageId, phase);
       }
       if (m.params?.update?.sessionUpdate === 'agent_message_chunk' &&
           JSON.stringify(m.params.update).includes('OOB_PRIVATE_FAILURE_DETAIL')) leakedFailureText = true;
@@ -148,16 +166,20 @@ for (const filename of cases) {
   send(1, 'initialize', {protocolVersion: 1, clientInfo: {name: 'oob-adapter-fixture', version: '1'}, clientCapabilities: {...(scenario === 'plan' ? {plan:{}} : {}), _meta: config.clientCapabilityMeta || {}}});
   await new Promise(r => { child.once('close', r); child.once('error', e => { errorStage = e.code; r(); }); });
   clearTimeout(timer); server.closeAllConnections(); await new Promise(r => server.close(r));
-  const expectedTexts = scenario === 'conversation' ? ['OK', 'FOLLOWUP_OK'] : ['OK'];
+  const expectedTexts = scenario === 'conversation' ? ['OK', 'FOLLOWUP_OK'] :
+    scenario.startsWith('commentary') ? ['Checking files.Testing results.Done.'] : ['OK'];
   const planPassed = scenario === 'plan' && planModeApplied && planUpdates.some(u => u.plan?.planId && u.plan?.content?.includes('OOB_PLAN_OK')) && terminal && !foreignSessionOutput;
   const outputPassed = turns.length === expectedTexts.length && turns.every((t, i) =>
     t.text === expectedTexts[i] && t.stopReason === 'end_turn') && !foreignSessionOutput;
-  const passed = initialized && sessionCreated && reached && !errorStage &&
+  const phasePassed = !scenario.startsWith('commentary') ||
+    JSON.stringify([...messagePhases.values()]) === JSON.stringify(['commentary','commentary','final_answer']);
+  const passed = initialized && sessionCreated && reached && !errorStage && phasePassed &&
     (scenario === 'failure' ? declaredFailure && !leakedFailureText && turns.length === 1 :
       (scenario === 'plan' ? planPassed : outputPassed) && (scenario !== 'conversation' || followupHasHistory));
-  const result = {scenario, planModeApplied, planUpdates, declaredFailure, leakedFailureText, assistantText, turns, foreignSessionOutput, followupHasHistory, case: filename.replace('.json', ''), initialized, sessionCreated, reasoningOptions, selectedThought: thoughtValue, configApplied, observedThought, reached, wirePath, requests, terminal, passed, errorStage};
+  const result = {scenario, firstTextMs, totalMs: performance.now() - startedAt, messagePhases:[...messagePhases.values()], phasePassed, planModeApplied, planUpdates, declaredFailure, leakedFailureText, assistantText, turns, foreignSessionOutput, followupHasHistory, case: filename.replace('.json', ''), initialized, sessionCreated, reasoningOptions, selectedThought: thoughtValue, configApplied, observedThought, reached, wirePath, requests, terminal, passed, errorStage};
   await writeFile(join(home, 'result.json'), JSON.stringify(result));
   await writeFile(join(home, 'stderr.log'), stderr, {mode: 0o600});
+  await writeFile(join(home, 'protocol.json'), JSON.stringify(protocolMessages, null, 2), {mode: 0o600});
   console.log(JSON.stringify(result));
   if (!passed) process.exitCode = 1;
 }

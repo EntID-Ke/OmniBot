@@ -219,17 +219,24 @@ String formatAgentRuntimeErrorForUser(
     r'(?:chat completion stream|responses|anthropic) request failed\((\d{3})\)',
   ).firstMatch(raw);
   final httpStatus = int.tryParse(httpMatch?.group(1) ?? '');
-  if (failureKind == 'provider_service_unavailable') return text('serviceUnavailable');
-  if (failureKind == 'provider_request_rejected') return text('requestRejected');
+  if (failureKind == 'provider_service_unavailable')
+    return text('serviceUnavailable');
+  if (failureKind == 'provider_request_rejected')
+    return text('requestRejected');
   if (failureKind == 'provider_quota_exceeded') return text('quota');
   if (failureKind == 'provider_rate_limited') return text('rateLimit');
   if (failureKind == 'provider_request_limited') return text('requestLimited');
   if (httpStatus == 401) return text('credentials');
   if (httpStatus == 429) {
-    if (raw.contains('insufficient_quota') || raw.contains('quota_exceeded') ||
-        raw.contains('quota exhausted') || raw.contains('quota_exhausted') ||
-        raw.contains('额度不足') || raw.contains('余额不足')) return text('quota');
-    if (raw.contains('rate_limit_exceeded') || raw.contains('rate_limit_error')) {
+    if (raw.contains('insufficient_quota') ||
+        raw.contains('quota_exceeded') ||
+        raw.contains('quota exhausted') ||
+        raw.contains('quota_exhausted') ||
+        raw.contains('额度不足') ||
+        raw.contains('余额不足'))
+      return text('quota');
+    if (raw.contains('rate_limit_exceeded') ||
+        raw.contains('rate_limit_error')) {
       return text('rateLimit');
     }
     return text('requestLimited');
@@ -982,10 +989,14 @@ class AgentRuntimeService {
   /// Returns the already negotiated ACP AgentInfo. The native host performs
   /// the wire handshake once per transport; callers must not create a second
   /// session just to initialize a shared ACP client.
-  static Future<Map<String, dynamic>> initialize({String? agentId}) {
+  static Future<Map<String, dynamic>> initialize({
+    String? agentId,
+    bool localRuntime = false,
+  }) {
     return _invokeMap('initialize', {
       if (agentId != null && agentId.trim().isNotEmpty)
         'agentId': agentId.trim(),
+      if (localRuntime) 'localRuntime': true,
     });
   }
 
@@ -1080,6 +1091,9 @@ class AgentRuntimeService {
     String? permissionMode,
     String? content,
     int? expectedRevision,
+    String? authMode,
+    int? expectedAuthRevision,
+    bool? diagnosticsEnabled,
   }) {
     return _invokeMap('agent/config/write', {
       'agentId': agentId.trim(),
@@ -1090,6 +1104,10 @@ class AgentRuntimeService {
       if (permissionMode != null) 'permissionMode': permissionMode,
       if (content != null) 'content': content,
       if (expectedRevision != null) 'expectedRevision': expectedRevision,
+      if (authMode != null) 'authMode': authMode,
+      if (expectedAuthRevision != null)
+        'expectedAuthRevision': expectedAuthRevision,
+      if (diagnosticsEnabled != null) 'diagnosticsEnabled': diagnosticsEnabled,
     });
   }
 
@@ -1314,18 +1332,37 @@ class AgentRuntimeService {
 
   static Future<Map<String, dynamic>> authenticateAgent({
     required String methodId,
+    String? agentId,
+    bool localRuntime = false,
     Map<String, dynamic>? meta,
   }) {
     return _invokeMap('authenticate', {
       'methodId': methodId.trim(),
+      if (agentId != null) 'agentId': agentId,
+      if (localRuntime) 'localRuntime': true,
       if (meta != null) '_meta': meta,
     });
   }
 
   static Future<Map<String, dynamic>> logoutAgent({
+    String? agentId,
+    bool localRuntime = false,
     Map<String, dynamic>? meta,
   }) {
-    return _invokeMap('logout', {if (meta != null) '_meta': meta});
+    return _invokeMap('logout', {
+      if (agentId != null) 'agentId': agentId,
+      if (localRuntime) 'localRuntime': true,
+      if (meta != null) '_meta': meta,
+    });
+  }
+
+  static Future<Map<String, dynamic>> readAgentAuthenticationStatus(
+    String agentId,
+  ) {
+    return _invokeMap('authentication/status', {
+      'agentId': agentId,
+      'localRuntime': true,
+    });
   }
 
   static Future<Map<String, dynamic>> listAgentProviders({
@@ -1457,11 +1494,13 @@ class AgentRuntimeService {
       if (failureKind is String && response['error'] is String) {
         return <String, dynamic>{
           ...response,
-          'error': formatAgentRuntimeErrorForUser(PlatformException(
-            code: 'AGENT_RUNTIME_CALL_FAILED',
-            message: response['error'] as String,
-            details: <String, dynamic>{'failureKind': failureKind},
-          )),
+          'error': formatAgentRuntimeErrorForUser(
+            PlatformException(
+              code: 'AGENT_RUNTIME_CALL_FAILED',
+              message: response['error'] as String,
+              details: <String, dynamic>{'failureKind': failureKind},
+            ),
+          ),
         };
       }
       return response;
@@ -1557,8 +1596,14 @@ class AgentRuntimeService {
     });
   }
 
-  static Future<Map<String, dynamic>> listModels() {
-    return _invokeMap('model/list');
+  static Future<Map<String, dynamic>> listModels({
+    String? agentId,
+    bool localRuntime = false,
+  }) {
+    return _invokeMap('model/list', {
+      if (agentId != null) 'agentId': agentId,
+      if (localRuntime) 'localRuntime': true,
+    });
   }
 
   static Future<Map<String, dynamic>> listModelsForStatus(

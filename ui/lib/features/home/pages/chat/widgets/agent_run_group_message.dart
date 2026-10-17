@@ -148,10 +148,10 @@ class _AgentRunGroupMessageState extends State<AgentRunGroupMessage>
 
   @override
   Widget build(BuildContext context) {
-    final primaryVisibleMessageId =
-        widget.group.visibleMessagesOldestFirst
-            .where((message) => !isAgentTurnFailureMessage(message))
-            .lastOrNull?.id;
+    final primaryVisibleMessageId = widget.group.visibleMessagesOldestFirst
+        .where((message) => !isAgentTurnFailureMessage(message))
+        .lastOrNull
+        ?.id;
     final hasFoldableHistory = widget.group.segmentsOldestFirst.any(
       (segment) =>
           segment.isProcess || segment.message.id != primaryVisibleMessageId,
@@ -211,6 +211,9 @@ class _AgentRunGroupMessageState extends State<AgentRunGroupMessage>
             // the completed-run fold; the same card id is refreshed for each
             // plan_update and remains visible as the current plan.
             _buildPersistentPlanSection(segment.message)
+          else if (segment.message.streamMeta?['agentMessagePhase'] ==
+              'commentary')
+            _buildVisibleMessageBubble(segment.message)
           else if (segment.message.id != primaryVisibleMessageId)
             _buildAnimatedHistoricalTextSection(segment.message)
           else

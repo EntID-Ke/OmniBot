@@ -27,6 +27,9 @@ val prootDebFile = bundledRuntimeDir.file(prootDebFileName)
 val prootDebChecksum = "f2cd07bafbebf625c62931994120d469934a8925a831f6e049bb08f91889a00d"
 val libtallocDebUrl = "$termuxPackageBaseUrl/pool/main/libt/libtalloc/libtalloc_2.4.3_aarch64.deb"
 val libtallocDebChecksum = "ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da"
+// The rolling Termux pool can remove this pinned version. A local copy is
+// acceptable only when it has the exact same verified bytes.
+val localLibtallocDeb = providers.gradleProperty("OMNIBOT_LIBTALLOC_DEB").orNull
 val alpineMiniRootfsUrl =
     "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz"
 val alpineMiniRootfsChecksum = "f31202c4070c4ef7de9e157e1bd01cb4da3a2150035d74ea5372c5e86f1efac1"
@@ -221,6 +224,9 @@ val prepareEmbeddedTerminalRuntime by tasks.registering {
     inputs.property("prootDebChecksum", prootDebChecksum)
     inputs.property("libtallocDebUrl", libtallocDebUrl)
     inputs.property("libtallocDebChecksum", libtallocDebChecksum)
+    localLibtallocDeb?.let {
+        inputs.file(file(it)).withPropertyName("localLibtallocDeb")
+    }
     inputs.property("alpineMiniRootfsUrl", alpineMiniRootfsUrl)
     inputs.property("alpineMiniRootfsChecksum", alpineMiniRootfsChecksum)
     outputs.dir(outputDir)
@@ -263,11 +269,15 @@ val prepareEmbeddedTerminalRuntime by tasks.registering {
         )
 
         val libtallocDeb = workDir.resolve("libtalloc.deb")
-        downloadRuntimeFile(
-            localPath = libtallocDeb.absolutePath,
-            remoteUrl = libtallocDebUrl,
-            expectedChecksum = libtallocDebChecksum
-        )
+        if (localLibtallocDeb != null) {
+            copyVerifiedRuntimeFile(file(localLibtallocDeb), libtallocDeb, libtallocDebChecksum)
+        } else {
+            downloadRuntimeFile(
+                localPath = libtallocDeb.absolutePath,
+                remoteUrl = libtallocDebUrl,
+                expectedChecksum = libtallocDebChecksum
+            )
+        }
         val libtallocPackageRoot = workDir.resolve("libtalloc")
         unpackDebData(libtallocDeb, libtallocPackageRoot)
         copyRuntimeFile(

@@ -1,5 +1,5 @@
 // Deterministic SDK-compatible success responses, no model inference.
-export function respondHarnessSuccess(req, res, body, {completedTextOnly = false, partialText = false, reply = 'OK'} = {}) {
+export function respondHarnessSuccess(req, res, body, {completedTextOnly = false, partialText = false, reply = 'OK', messages = null} = {}) {
   const path = new URL(req.url, 'http://fixture').pathname;
   const model = body.model;
   if (path.endsWith('/messages')) {
@@ -15,6 +15,27 @@ export function respondHarnessSuccess(req, res, body, {completedTextOnly = false
     event('message_stop',{});res.end();return;
   }
   if (path.endsWith('/responses')) {
+    if (messages) {
+      const items = messages.map((message, index) => ({id:`msg_fixture_${index}`, type:'message', role:'assistant',
+        status:'completed', phase:message.phase, content:[{type:'output_text',text:message.text,annotations:[],logprobs:[]}]}));
+      const response = {id:'resp_commentary_fixture', object:'response', created_at:1, model, status:'completed',
+        output:items, usage:{input_tokens:5,output_tokens:6,total_tokens:11}};
+      res.writeHead(200, {'content-type':'text/event-stream'});
+      let sequence = 0;
+      const event = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({type,sequence_number:sequence++,...data})}\n\n`);
+      event('response.created', {response:{...response,status:'in_progress',output:[]}});
+      for (const [index, item] of items.entries()) {
+        const part = item.content[0];
+        event('response.output_item.added', {output_index:index,item:{...item,status:'in_progress',content:[]}});
+        event('response.content_part.added', {item_id:item.id,output_index:index,content_index:0,part:{...part,text:''}});
+        if (!completedTextOnly) event('response.output_text.delta', {item_id:item.id,output_index:index,content_index:0,delta:partialText ? part.text.slice(0,1) : part.text});
+        event('response.output_text.done', {item_id:item.id,output_index:index,content_index:0,text:part.text});
+        event('response.content_part.done', {item_id:item.id,output_index:index,content_index:0,part});
+        event('response.output_item.done', {output_index:index,item});
+      }
+      event('response.completed', {response});
+      res.end(); return;
+    }
     const part={type:'output_text',text:reply,annotations:[],logprobs:[]};
     const item={id:'msg_fixture',type:'message',role:'assistant',status:'completed',content:[part]};
     const response={id:'resp_fixture',object:'response',created_at:1,model,status:'completed',output:[item],usage:{input_tokens:5,output_tokens:1,total_tokens:6}};

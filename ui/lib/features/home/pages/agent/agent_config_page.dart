@@ -13,6 +13,8 @@ import 'package:ui/utils/ui.dart';
 import 'package:ui/widgets/common_app_bar.dart';
 import 'package:ui/widgets/settings_section_title.dart';
 
+import 'codex_subscription_settings.dart';
+
 class AgentConfigPage extends StatefulWidget {
   const AgentConfigPage({super.key, required this.agentId});
 
@@ -36,6 +38,9 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
   String _configPath = '';
   String _authPath = '';
   int _configRevision = 0;
+  int _authRevision = 0;
+  String _authMode = 'api';
+  bool _diagnosticsEnabled = false;
   bool _loading = true;
   bool _saving = false;
   bool _obscureApiKey = true;
@@ -131,6 +136,9 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
   }
 
   void _syncPayload(Map<String, dynamic> payload) {
+    _authMode = payload['authMode'] == 'chatgpt' ? 'chatgpt' : 'api';
+    _diagnosticsEnabled = payload['diagnosticsEnabled'] == true;
+    _authRevision = (payload['authRevision'] as num?)?.toInt() ?? 0;
     _configRevision = switch (payload['revision']) {
       int value => value,
       num value => value.toInt(),
@@ -271,6 +279,8 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
         case 'codex':
           final payload = await AgentRuntimeService.writeAgentConfig(
             _agent!.id,
+            authMode: _authMode,
+            expectedAuthRevision: _authRevision,
             expectedRevision: _configRevision > 0 ? _configRevision : null,
           );
           if (!mounted) return;
@@ -501,7 +511,7 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
 
   String get _pageTitle {
     return switch (_kind) {
-      'codex' => _text('Codex API 配置', 'Codex API configuration'),
+      'codex' => _text('Codex 认证与模型', 'Codex authentication and models'),
       'json' => _text('Claude Code 配置', 'Claude Code configuration'),
       'jsonc' => _text('OpenCode 配置', 'OpenCode configuration'),
       'deepseek-harness' => _text(
@@ -516,8 +526,8 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
   String get _pageSubtitle {
     return switch (_kind) {
       'codex' => _text(
-        '默认直接复用统一 Provider；这里仅查看或覆盖官方 Codex 文件，保存后下一次启动 ACP 时生效。',
-        'The shared Provider is used by default. This page only views or overrides the official Codex files; changes apply on the next ACP start.',
+        '选择 ChatGPT 订阅或 Custom API。两种模式分别保存认证信息；切换前请完成或停止当前任务。',
+        'Choose ChatGPT subscription or Custom API. Credentials are kept separately. Finish or stop the current task before switching.',
       ),
       'json' => _text(
         '直接编辑 $_configPath。这里显示的就是配置文件当前内容。',
@@ -552,13 +562,106 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
   Widget _buildCodexEditor() {
     return Column(
       children: [
-        _buildSharedProviderModelSelector(),
+        SwitchListTile.adaptive(
+          contentPadding: EdgeInsets.zero,
+          title: Text(_text('记录客户端耗时', 'Record client timing')),
+          subtitle: Text(
+            _text(
+              '仅记录运行阶段和工具耗时，不包含消息正文或凭证。',
+              'Records runtime and tool timing, without message text or credentials.',
+            ),
+          ),
+          value: _diagnosticsEnabled,
+          onChanged: _saving
+              ? null
+              : (value) async {
+                  setState(() => _saving = true);
+                  try {
+                    final payload = await AgentRuntimeService.writeAgentConfig(
+                      widget.agentId,
+                      authMode: _authMode,
+                      expectedAuthRevision: _authRevision,
+                      diagnosticsEnabled: value,
+                    );
+                    if (mounted) {
+                      setState(() {
+                        _syncPayload(payload);
+                        _changed = true;
+                        _error = null;
+                      });
+                    }
+                  } catch (error) {
+                    if (mounted) setState(() => _error = error.toString());
+                  } finally {
+                    if (mounted) setState(() => _saving = false);
+                  }
+                },
+        ),
+        DropdownButtonFormField<String>(
+          key: ValueKey('codex-auth-mode-$_authMode'),
+          initialValue: _authMode,
+          decoration: InputDecoration(
+            labelText: _text('认证方式', 'Authentication mode'),
+          ),
+          items: const [
+            DropdownMenuItem(value: 'api', child: Text('Custom API')),
+            DropdownMenuItem(
+              value: 'chatgpt',
+              child: Text('ChatGPT Subscription'),
+            ),
+          ],
+          onChanged: _saving
+              ? null
+              : (value) async {
+                  if (value == null || value == _authMode) return;
+                  setState(() => _saving = true);
+                  try {
+                    final payload = await AgentRuntimeService.writeAgentConfig(
+                      widget.agentId,
+                      authMode: value,
+                      expectedAuthRevision: _authRevision,
+                    );
+                    if (mounted) {
+                      setState(() {
+                        _syncPayload(payload);
+                        _changed = true;
+                        _error = null;
+                      });
+                    }
+                  } catch (error) {
+                    if (mounted) setState(() => _error = error.toString());
+                  } finally {
+                    if (mounted) setState(() => _saving = false);
+                  }
+                },
+        ),
+        const SizedBox(height: 12),
+        if (_authMode == 'chatgpt')
+          CodexSubscriptionSettings(
+            agentId: widget.agentId,
+            authRevision: _authRevision,
+            onConfigurationChanged: (payload) {
+              if (mounted) {
+                setState(() {
+                  _syncPayload(payload);
+                  _changed = true;
+                });
+              }
+            },
+          )
+        else
+          _buildSharedProviderModelSelector(),
         const SizedBox(height: 12),
         Text(
-          _text(
-            'Base URL 和 API Key 自动来自 Provider 配置。官方配置文件：$_configPath；认证文件：$_authPath',
-            'Base URL and API key come from the selected Provider. Official config: $_configPath; auth: $_authPath',
-          ),
+          _authMode == 'chatgpt'
+              ? _text(
+                  '由官方 Codex 管理登录。完成浏览器授权后返回此页面。',
+                  'Official Codex manages sign-in. Return here after browser authorization.',
+                )
+              : _text(
+                  'Base URL 和 API Key 自动来自 Provider 配置。官方配置文件：$_configPath；认证文件：$_authPath',
+                  'Base URL and API key come from the selected Provider. Official config: $_configPath; auth: $_authPath',
+                ),
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],

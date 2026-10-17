@@ -26,6 +26,98 @@ void main() {
     runtime.dispose();
   });
 
+  test('Commentary and final remain distinct across tools, history and cancellation', () {
+    runtime.activeAcpSessionId = 'codex-session';
+    runtime.activeAcpTurnId = 'codex-turn';
+    runtime.currentDispatchTurnId = 'codex-turn';
+    Map<String, dynamic> chunk(String id, String phase, String text) => {
+      'method': 'session/update',
+      'turnId': 'codex-turn',
+      'params': {
+        'sessionId': 'codex-session',
+        'update': {
+          'sessionUpdate': 'agent_message_chunk',
+          'messageId': id,
+          'content': {'type': 'text', 'text': text},
+          '_meta': {
+            'codex': {'phase': phase},
+          },
+        },
+      },
+    };
+    reducer.reduce(
+      runtime: runtime,
+      event: chunk('c1', 'commentary', 'Inspecting files.'),
+    );
+    reducer.reduce(
+      runtime: runtime,
+      event: {
+        'method': 'session/update',
+        'turnId': 'codex-turn',
+        'params': {
+          'sessionId': 'codex-session',
+          'update': {
+            'sessionUpdate': 'tool_call',
+            'toolCallId': 'read-1',
+            'kind': 'read',
+            'title': 'Read files',
+            'status': 'completed',
+          },
+        },
+      },
+    );
+    reducer.reduce(
+      runtime: runtime,
+      event: chunk('c2', 'commentary', 'Testing the change.'),
+    );
+    reducer.reduce(
+      runtime: runtime,
+      event: chunk('f1', 'final_answer', 'Done.'),
+    );
+    final text = runtime.messages
+        .where((message) => message.user == 2 && message.type == 1)
+        .toList();
+    expect(
+      text.map((message) => message.text),
+      containsAll(['Inspecting files.', 'Testing the change.', 'Done.']),
+    );
+    expect(
+      text.where(
+        (message) => message.streamMeta?['agentMessagePhase'] == 'commentary',
+      ),
+      hasLength(2),
+    );
+    final restored = text
+        .map(
+          (message) => ChatMessageModel.fromJson(
+            jsonDecode(jsonEncode(message.toJson())),
+          ),
+        )
+        .toList();
+    expect(
+      restored.where(
+        (message) => message.streamMeta?['agentMessagePhase'] == 'commentary',
+      ),
+      hasLength(2),
+    );
+    reducer.reducePromptResponse(
+      runtime: runtime,
+      sessionId: 'codex-session',
+      turnId: 'codex-turn',
+      stopReason: 'cancelled',
+    );
+    final count = runtime.messages.length;
+    reducer.reduce(
+      runtime: runtime,
+      event: chunk('late', 'commentary', 'Must not appear.'),
+    );
+    expect(runtime.messages.length, count);
+    expect(
+      runtime.messages.any((message) => message.text == 'Must not appear.'),
+      isFalse,
+    );
+  });
+
   for (final reason in ['cancelled', 'error', 'end_turn']) {
     test(
       'official $reason settles only unresolved requests owned by that turn',

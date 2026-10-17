@@ -6,8 +6,9 @@
 /// vocabulary already consumed by the shared reducer while retaining every
 /// namespace for diagnostics and future adapters.
 
-typedef AcpExtensionProjector =
-    Map<String, dynamic>? Function(Map<String, dynamic> payload);
+typedef AcpExtensionProjector = Map<String, dynamic>? Function(
+  Map<String, dynamic> payload,
+);
 
 class AcpExtensionProjection {
   const AcpExtensionProjection({
@@ -34,7 +35,20 @@ class AcpExtensionRegistry {
   /// The process-wide registry used by the ACP reducer.  Harness adapters can
   /// register a namespace once during startup; the chat page does not need to
   /// know which Harness produced the metadata.
-  static final AcpExtensionRegistry shared = AcpExtensionRegistry();
+  static final AcpExtensionRegistry shared = AcpExtensionRegistry(
+    projectors: {'codex': _codexMessagePresentation},
+  );
+
+  // codex-acp 1.10.0 emits this namespace without AIR phase negotiation.
+  // Accept only user-visible message phases, never reasoning or arbitrary text.
+  static Map<String, dynamic>? _codexMessagePresentation(
+    Map<String, dynamic> payload,
+  ) {
+    final phase = payload['phase'];
+    return phase == 'commentary' || phase == 'final_answer'
+        ? {'messagePhase': phase}
+        : null;
+  }
 
   final Map<String, AcpExtensionProjector> _projectors;
 

@@ -221,6 +221,7 @@ class AgentRuntimeManager private constructor(
     private val historyRepository = AgentConversationHistoryRepository(appContext)
     private val remoteConfigStore = CodexRemoteBridgeConfigStore(appContext)
     private val acpAgentProfileStore = AcpAgentProfileStore(appContext)
+    private val codexAuthConfigurationStore = CodexAuthConfigurationStore(appContext)
     private val scheduledTaskScheduler by lazy {
         WorkspaceScheduledTaskScheduler(appContext)
     }
@@ -265,7 +266,7 @@ class AgentRuntimeManager private constructor(
         prepareLaunchEnvironment = ::prepareLocalAcpLaunch,
         resolveSessionMcpEnabled = { profile ->
             AcpHarnessAdapters.forProfile(profile)
-                .supportsSessionMcp(currentAgentProviderCredentials())
+                .supportsSessionMcp(if (authModeFor(profile) == CodexAuthMode.CHATGPT) null else currentAgentProviderCredentials())
         },
         prepareSharedProviderBinding = ::prepareSharedProviderBinding,
         buildHandoffContext = ::buildLocalAcpHandoffContext,
@@ -645,7 +646,7 @@ class AgentRuntimeManager private constructor(
     suspend fun invalidateSharedProviderRuntime(changedProviderProfileId: String? = null) {
         sessionMutex.withLock {
             val activeProfiles = acpAgentProfileStore.list().filter { profile ->
-                AcpAgentProfileStore.usesSharedProvider(profile) &&
+                usesSharedProvider(profile) &&
                     localRuntimeFor(profile.id).isConnected
             }
             if (activeProfiles.isEmpty()) return@withLock
@@ -793,7 +794,7 @@ class AgentRuntimeManager private constructor(
                             ?: selectedLocalRuntime().activeAgentId()
                     )
                 }
-                ?.let(AcpAgentProfileStore::usesSharedProvider) == true
+                ?.let(::usesSharedProvider) == true
         ) {
             return listAuthoritativeProviderModels()
         }
@@ -1526,9 +1527,11 @@ class AgentRuntimeManager private constructor(
         val adapterConfig = AgentConfigAdapterRegistry.readConfig(
             input = AgentProviderMappingInput(
                 agentId = profile.id,
-                provider = currentAgentProviderCredentials(),
-                model = currentAgentBoundModel(),
+                provider = if (authModeFor(profile) == CodexAuthMode.CHATGPT) null else currentAgentProviderCredentials(),
+                model = if (authModeFor(profile) == CodexAuthMode.CHATGPT) codexAuthConfigurationStore.model() else currentAgentBoundModel(),
                 harnessAdapter = harnessAdapter,
+                codexAuthMode = authModeFor(profile),
+                codexReasoningEffort = codexAuthConfigurationStore.effort(),
             ),
             access = object : AgentConfigFileAccess {
                 override suspend fun read(path: String, executorKey: String): String =
@@ -1544,7 +1547,14 @@ class AgentRuntimeManager private constructor(
                 "agentId" to profile.id,
                 "kind" to "profile",
             ),
-        )
+        ).let { payload ->
+            if (harnessAdapter.supportsChatGptSubscription) {
+                payload + mapOf(
+                    "authRevision" to codexAuthConfigurationStore.revision(),
+                    "diagnosticsEnabled" to codexAuthConfigurationStore.diagnosticsEnabled(),
+                )
+            } else payload
+        }
     }
 
     private suspend fun writeAgentConfig(args: Map<String, Any?>): Map<String, Any?> {
@@ -1554,6 +1564,44 @@ class AgentRuntimeManager private constructor(
             ?: throw IllegalArgumentException("Unknown ACP agent: $agentId")
         validateExpectedConfigRevision(agentId, args)
         val harnessAdapter = AcpHarnessAdapters.forProfile(profile)
+        if (args.containsKey("authMode")) {
+            require(harnessAdapter.supportsChatGptSubscription) {
+                "This Harness does not support ChatGPT subscription authentication."
+            }
+            val mode = CodexAuthMode.parse(args["authMode"] as? String
+                ?: throw IllegalArgumentException("authMode is required."))
+            sessionMutex.withLock {
+                val target = localRuntimeFor(profile.id)
+                check(!target.hasActiveTurns()) { "Finish or stop the active task before switching authentication." }
+                val expected = args.longValue("expectedAuthRevision")
+                require(expected == null || expected == codexAuthConfigurationStore.revision()) {
+                    "Codex authentication configuration changed; reopen settings."
+                }
+                val model = args["model"] as? String
+                val effort = args["reasoningEffort"] as? String
+                val diagnostics = args["diagnosticsEnabled"] as? Boolean
+                if (model != null || effort != null) {
+                    require(mode == CodexAuthMode.CHATGPT && authModeFor(profile) == mode && target.isConnected) {
+                        "Sign in and refresh the official model catalog before selecting a subscription model."
+                    }
+                    val catalog = target.handleMethod("model/list", emptyMap()) as? Map<*, *> ?: emptyMap<Any, Any>()
+                    val models = (catalog["models"] as? List<*>).orEmpty()
+                    require(model == null || model.isEmpty() || models.any { (it as? Map<*, *>)?.get("id") == model }) {
+                        "Select a model from the current official Codex catalog."
+                    }
+                    val efforts = (catalog["reasoningEfforts"] as? List<*>).orEmpty()
+                    require(effort == null || effort.isEmpty() || effort in efforts) {
+                        "Select a reasoning effort advertised by the official Codex runtime."
+                    }
+                }
+                if (mode != codexAuthConfigurationStore.read() || model != null || effort != null || diagnostics != null) {
+                    target.disconnect()
+                    codexAuthConfigurationStore.write(mode, expected, model, effort, diagnostics)
+                    invalidateLocalProbeCache()
+                }
+            }
+            return readAgentConfig(mapOf("agentId" to profile.id))
+        }
         val harnessConfigPath = harnessAdapter.launchConfigPath
         if (harnessConfigPath != null) {
             val content = harnessAdapter.writeConfigPayload(
@@ -1733,8 +1781,8 @@ class AgentRuntimeManager private constructor(
             ?: throw IllegalArgumentException("Invalid Agent config path.")
         val command = """
             set -eu
-            mkdir -p ${shellQuote(parent)}
             umask 077
+            mkdir -p ${shellQuote(parent)}
             printf %s ${shellQuote(content)} > ${shellQuote(path)}
             chmod 600 ${shellQuote(path)}
         """.trimIndent()
@@ -1955,15 +2003,14 @@ class AgentRuntimeManager private constructor(
         profile: AcpAgentProfile,
         providerModelsOverride: List<ProviderModelOption>? = null,
     ): Map<String, String> {
-        val usesSharedProvider = AcpAgentProfileStore
-            .officialRuntime(profile)
-            ?.usesSharedProvider == true
+        val usesSharedProvider = usesSharedProvider(profile)
+        val authMode = authModeFor(profile)
         // This path only builds launch environment for an already installed
         // Harness.  Dependency installation belongs exclusively to the
         // explicit `agent/prepare` request above.
-        val sharedProviderProfile = currentAgentProviderProfile()
-        val sharedProvider = currentAgentProviderCredentials()
-        val boundModel = currentAgentBoundModel()
+        val sharedProviderProfile = if (authMode == CodexAuthMode.CHATGPT) null else currentAgentProviderProfile()
+        val sharedProvider = if (authMode == CodexAuthMode.CHATGPT) null else currentAgentProviderCredentials()
+        val boundModel = if (authMode == CodexAuthMode.CHATGPT) codexAuthConfigurationStore.model() else currentAgentBoundModel()
         if (usesSharedProvider) {
             checkNotNull(sharedProviderProfile) {
                 "Dispatch Model Provider is not configured. " +
@@ -1983,7 +2030,9 @@ class AgentRuntimeManager private constructor(
         val providerModels = providerModelsOverride ?: if (usesSharedProvider && sharedProviderProfile != null) {
             ModelProviderConfigStore.cachedModels(appContext, sharedProviderProfile)
         } else emptyList()
-        val resolvedModel = if (usesSharedProvider) {
+        val resolvedModel = if (authMode == CodexAuthMode.CHATGPT) {
+            boundModel
+        } else if (usesSharedProvider) {
             val model = resolveAcpLaunchModelForDispatch(
                 providerModelIds = providerModels.map(ProviderModelOption::id),
                 dispatchModel = boundModel,
@@ -2031,6 +2080,8 @@ class AgentRuntimeManager private constructor(
                 model = resolvedModel,
                 harnessAdapter = harnessAdapter,
                 rawHarnessConfig = existingHarnessConfig,
+                codexAuthMode = authMode,
+                codexReasoningEffort = codexAuthConfigurationStore.effort(),
             )
         )
         val existingAdapterConfig = mapping.launchConfigPath?.let { path ->
@@ -2062,6 +2113,8 @@ class AgentRuntimeManager private constructor(
                 provider = sharedProvider,
                 model = resolvedModel,
                 harnessAdapter = harnessAdapter,
+                codexAuthMode = authMode,
+                codexReasoningEffort = codexAuthConfigurationStore.effort(),
             ),
             mapping = mapping,
             providerModels = providerModelsForAdapter,
@@ -2088,7 +2141,9 @@ class AgentRuntimeManager private constructor(
         }
         val launchEnvironment =
             if (launchConfigWrites.isNotEmpty()) mapping.environment else harnessEnvironment
-        return launchEnvironment
+        return if (harnessAdapter.supportsChatGptSubscription) {
+            launchEnvironment + ("OMNIBOT_ACP_DIAGNOSTICS" to if (codexAuthConfigurationStore.diagnosticsEnabled()) "1" else "0")
+        } else launchEnvironment
     }
 
     /**
@@ -2491,7 +2546,7 @@ class AgentRuntimeManager private constructor(
             connectLocalAcp(profile = targetProfile, runtime = targetRuntime)
         }
         if (method == "session/load" && args["refreshConfig"] == true &&
-            AcpAgentProfileStore.usesSharedProvider(targetProfile) &&
+            usesSharedProvider(targetProfile) &&
             AcpHarnessAdapters.forProfile(targetProfile).configAdapterId != null) {
             // Explicit model-card refresh owns discovery. Startup and prompts
             // still use the saved binding and never require a /models request.
@@ -2532,6 +2587,12 @@ class AgentRuntimeManager private constructor(
         remoteEnabled: Boolean = remoteConfigStore.read().enabled,
     ): Boolean {
         val requestedAgentId = args.stringValue("agentId")?.trim()
+        if (args["localRuntime"] == true && requestedAgentId != null) {
+            require(acpAgentProfileStore.list().any { it.id == requestedAgentId && it.enabled }) {
+                "Requested local ACP Agent is not enabled."
+            }
+            return true
+        }
         val sessionId = args.stringValue("sessionId")
             ?: args.stringValue("threadId")
         val sessionAgentId = sessionId
@@ -2548,6 +2609,14 @@ class AgentRuntimeManager private constructor(
                 allLocalRuntimes().any { it.ownsSession(sessionId) },
         )
     }
+
+    private fun authModeFor(profile: AcpAgentProfile): CodexAuthMode =
+        if (AcpHarnessAdapters.forProfile(profile).supportsChatGptSubscription) {
+            codexAuthConfigurationStore.read()
+        } else CodexAuthMode.API
+
+    private fun usesSharedProvider(profile: AcpAgentProfile): Boolean =
+        AcpAgentProfileStore.usesSharedProvider(profile) && authModeFor(profile) != CodexAuthMode.CHATGPT
 
     private suspend fun requestAccountMethod(method: String, params: Any?): Any {
         if (resolveRuntime().kind == AgentRuntimeKind.REMOTE) {
@@ -3655,6 +3724,7 @@ private val LOCAL_ACP_METHODS = setOf(
     "review/start",
     "authenticate",
     "auth/authenticate",
+    "authentication/status",
     "logout",
     "auth/logout",
     "providers/list",

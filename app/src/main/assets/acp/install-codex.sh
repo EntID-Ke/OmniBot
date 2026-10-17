@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-npm install -g --prefix /root/.npm-global --no-audit --no-fund @openai/codex@latest @agentclientprotocol/codex-acp@1.10.0
+npm install -g --prefix /root/.npm-global --no-audit --no-fund @openai/codex@0.163.0 @agentclientprotocol/codex-acp@1.10.0
 
 # Temporary, version-checked upstream compatibility patch. Official item/completed
 # carries authoritative text even when a Responses gateway omits text deltas.

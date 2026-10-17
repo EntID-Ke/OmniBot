@@ -46,6 +46,15 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
         input: AgentProviderMappingInput,
         access: AgentConfigFileAccess,
     ): Map<String, Any?> {
+        if (input.codexAuthMode == CodexAuthMode.CHATGPT) {
+            return linkedMapOf(
+                "agentId" to input.agentId, "kind" to "codex", "authMode" to "chatgpt",
+                "configPath" to CODEX_SUBSCRIPTION_CONFIG,
+                "authPath" to CODEX_SUBSCRIPTION_AUTH,
+                "baseUrl" to "", "apiKey" to "", "model" to input.model.orEmpty(),
+                "reasoningEffort" to input.codexReasoningEffort,
+            )
+        }
         val configToml = access.read(
             CODEX_CONFIG_TOML_PATH,
             "codex-agent-config-read",
@@ -58,6 +67,7 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
         return linkedMapOf(
             "agentId" to input.agentId,
             "kind" to "codex",
+            "authMode" to input.codexAuthMode.value,
             "configPath" to CODEX_CONFIG_TOML_DISPLAY_PATH,
             "authPath" to CODEX_AUTH_JSON_DISPLAY_PATH,
             "baseUrl" to (provider?.baseUrl
@@ -72,6 +82,9 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
         args: Map<String, Any?>,
         providerModels: List<ProviderModelOption>,
     ): List<AgentConfigWrite> {
+        require(input.codexAuthMode == CodexAuthMode.API) {
+            "Subscription credentials are managed by the official Codex authentication flow."
+        }
         val baseUrl = args.agentConfigStringValue("baseUrl")
             ?: throw IllegalArgumentException("Base URL is required.")
         val model = args.agentConfigStringValue("model")
@@ -123,6 +136,12 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
     }
 
     override fun map(input: AgentProviderMappingInput): AgentProviderMapping {
+        if (input.codexAuthMode == CodexAuthMode.CHATGPT) {
+            return AgentProviderMapping(environment = mapOf(
+                "CODEX_HOME" to CODEX_SUBSCRIPTION_HOME,
+                "NO_BROWSER" to "1",
+            ))
+        }
         val provider = input.provider
         require(provider?.protocolType != "anthropic") {
             "Codex requires an OpenAI Responses-compatible endpoint; the current Provider is configured as Anthropic."
@@ -157,6 +176,13 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
         providerModels: List<ProviderModelOption>,
         existingConfig: String,
     ): List<AgentConfigWrite> {
+        if (input.codexAuthMode == CodexAuthMode.CHATGPT) {
+            // Never write auth.json or inject a Custom API model/catalog here.
+            return listOf(AgentConfigWrite(
+                CODEX_SUBSCRIPTION_CONFIG, codexSubscriptionConfig(input.model, input.codexReasoningEffort),
+                "codex-subscription-config-write",
+            ))
+        }
         val provider = input.provider ?: return emptyList()
         val model = mapping.codexModel ?: return emptyList()
         return listOf(

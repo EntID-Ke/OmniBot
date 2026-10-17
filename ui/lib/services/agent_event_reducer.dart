@@ -1504,6 +1504,18 @@ class AgentEventReducer {
     if (presentation == null || presentation.isEmpty) {
       return;
     }
+    final phase = presentation['messagePhase'];
+    if (phase == 'commentary' || phase == 'final_answer') {
+      final index = runtime.messages.indexWhere(
+        (message) => message.id == entryId,
+      );
+      if (index >= 0 && runtime.messages[index].user == 2) {
+        final message = runtime.messages[index];
+        runtime.messages[index] = message.copyWith(
+          streamMeta: {...?message.streamMeta, 'agentMessagePhase': phase},
+        );
+      }
+    }
     final usage = _asStringMap(presentation['usage']);
     if (usage != null) {
       _applyAcpUsage(runtime, usage);
@@ -4647,11 +4659,8 @@ class AgentEventReducer {
 
   String? _approvalKind(Map<String, dynamic> params) {
     final toolCall = _approvalToolCall(params);
-    return _firstString([
-      toolCall?['kind'],
-      params['kind'],
-      params['type'],
-    ])?.toLowerCase();
+    return _firstString([toolCall?['kind'], params['kind'], params['type']])
+        ?.toLowerCase();
   }
 
   bool _containsApprovalDetail(List<String> parts, String value) {
@@ -5483,9 +5492,8 @@ List<Map<String, dynamic>> _acpContentItems(Object? value) {
 }
 
 String _acpTerminalOutputDelta(Map<String, dynamic> update) {
-  final encoding = _string(
-    update['encoding'] ?? update['dataEncoding'],
-  )?.toLowerCase();
+  final encoding = _string(update['encoding'] ?? update['dataEncoding'])
+      ?.toLowerCase();
   if (encoding == 'base64') {
     return _decodeBase64Output(update['data'] ?? update['output']) ?? '';
   }

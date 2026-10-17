@@ -56,6 +56,8 @@ internal data class AgentProviderMappingInput(
     val harnessAdapter: AcpHarnessAdapter = AcpHarnessAdapters.standard,
     val deepSeekConfig: DeepSeekHarnessConfig = DeepSeekHarnessConfig(),
     val rawHarnessConfig: String? = null,
+    val codexAuthMode: CodexAuthMode = CodexAuthMode.API,
+    val codexReasoningEffort: String? = null,
 )
 
 internal data class AgentProviderMapping(
@@ -114,6 +116,9 @@ internal fun mergeAcpLaunchEnvironment(
  */
 private val PROVIDER_OWNED_ENVIRONMENT_KEYS = setOf(
     "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_HOME",
     "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",

@@ -7,6 +7,9 @@
     <cloud-backup>
         <exclude domain="sharedpref" path="omni_account_tokens.xml" />
         <exclude domain="sharedpref" path="omni_model_provider_secrets.xml" />
+        <!-- OAuth files remain on the device; the official Codex runtime owns them. -->
+        <exclude domain="root" path="local/alpine/root/.codex-chatgpt/auth.json" />
+        <exclude domain="root" path="local/ubuntu/root/.codex-chatgpt/auth.json" />
         <!-- TODO: Use <include> and <exclude> to control what is backed up.
         <include .../>
         <exclude .../>
@@ -15,5 +18,8 @@
     <device-transfer>
         <exclude domain="sharedpref" path="omni_account_tokens.xml" />
         <exclude domain="sharedpref" path="omni_model_provider_secrets.xml" />
+        <!-- OAuth files remain on the device; the official Codex runtime owns them. -->
+        <exclude domain="root" path="local/alpine/root/.codex-chatgpt/auth.json" />
+        <exclude domain="root" path="local/ubuntu/root/.codex-chatgpt/auth.json" />
     </device-transfer>
 </data-extraction-rules>

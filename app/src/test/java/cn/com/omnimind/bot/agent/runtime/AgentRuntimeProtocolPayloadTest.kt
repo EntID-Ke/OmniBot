@@ -584,7 +584,7 @@ class AgentRuntimeProtocolPayloadTest {
             AcpAgentProfileStore.officialRuntime(codex)?.discoveryCommand
         )
         assertEquals(
-            "@openai/codex@latest",
+            "@openai/codex@0.163.0",
             AcpAgentProfileStore.officialRuntime(codex)?.managedAdapterPackage
         )
         val codexRuntime = requireNotNull(AcpAgentProfileStore.officialRuntime(codex))

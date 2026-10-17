@@ -21,6 +21,11 @@ import kotlinx.serialization.json.put
  * session, turn, and Provider paths remain shared.
  */
 internal interface AcpHarnessAdapter {
+    val supportsChatGptSubscription: Boolean
+        get() = false
+    fun environmentKeysToUnset(environment: Map<String, String>): Set<String> = emptySet()
+    fun environmentOverridesAfterShell(environment: Map<String, String>): Map<String, String> = emptyMap()
+    fun validateAuthenticationMethod(methodId: String, environment: Map<String, String>) = Unit
     /** Declarative key for the optional Harness config converter. */
     val configAdapterId: String?
         get() = null
@@ -80,6 +85,21 @@ internal object AcpHarnessAdapters {
     // Harness adapter, not to a vendor branch in the shared runtime.
     val codex: AcpHarnessAdapter = object : AcpHarnessAdapter {
         override val configAdapterId = "codex"
+        override val supportsChatGptSubscription = true
+        override fun environmentKeysToUnset(environment: Map<String, String>): Set<String> =
+            if (environment["CODEX_HOME"] == CODEX_SUBSCRIPTION_HOME) {
+                CODEX_SUBSCRIPTION_UNSET_KEYS + environment.keys.filter {
+                    it.startsWith("OMNIBOT_PROVIDER_HEADER_")
+                }
+            } else setOf("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+        override fun environmentOverridesAfterShell(environment: Map<String, String>): Map<String, String> =
+            environment.filterKeys { it == "CODEX_HOME" || it == "NO_BROWSER" }
+        override fun validateAuthenticationMethod(methodId: String, environment: Map<String, String>) {
+            val subscription = environment["CODEX_HOME"] == CODEX_SUBSCRIPTION_HOME
+            require(subscription == (methodId == "chat-gpt" || methodId == "chat-gpt-device-code")) {
+                "Select the matching Codex authentication mode before signing in."
+            }
+        }
 
         // codex-acp 1.10.0's unstable plan extension calls the identity
         // planId; acp-kotlin 0.30.1 requires id. Normalize only this wire
