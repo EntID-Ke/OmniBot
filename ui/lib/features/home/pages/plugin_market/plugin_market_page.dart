@@ -21,6 +21,7 @@ class _PluginMarketPageState extends State<PluginMarketPage> {
   final FocusNode _searchFocusNode = FocusNode();
   List<OmniPluginItem> _plugins = const <OmniPluginItem>[];
   bool _loading = true;
+  bool _loadFailed = false;
 
   List<OmniPluginItem> get _visiblePlugins {
     final query = _searchController.text.trim().toLowerCase();
@@ -67,11 +68,14 @@ class _PluginMarketPageState extends State<PluginMarketPage> {
             .where((plugin) => !plugin.hidden)
             .toList(growable: false);
         _loading = false;
+        _loadFailed = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _loading = false);
-      showToast(context.l10n.pluginLoadFailed, type: ToastType.error);
+      setState(() {
+        _loading = false;
+        _loadFailed = true;
+      });
     }
   }
 
@@ -103,6 +107,14 @@ class _PluginMarketPageState extends State<PluginMarketPage> {
               bottom: false,
               child: Column(
                 children: [
+                  if (_loadFailed && _plugins.isNotEmpty)
+                    ListTile(
+                      title: Text(context.l10n.pluginLoadFailed),
+                      trailing: TextButton(
+                        onPressed: _loadPlugins,
+                        child: Text(context.l10n.pluginRetry),
+                      ),
+                    ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
                     child: HomeDrawerSearchField(
@@ -128,6 +140,17 @@ class _PluginMarketPageState extends State<PluginMarketPage> {
   }
 
   Widget _buildContent(List<OmniPluginItem> visiblePlugins) {
+    if (_loadFailed && _plugins.isEmpty) {
+      return _buildStateList(
+        icon: Icons.error_outline,
+        title: context.l10n.pluginLoadFailed,
+        action: TextButton(
+          key: const Key('plugin-market-retry'),
+          onPressed: _loadPlugins,
+          child: Text(context.l10n.pluginRetry),
+        ),
+      );
+    }
     if (_plugins.isEmpty) {
       return _buildStateList(
         icon: Icons.extension_outlined,
@@ -273,6 +296,7 @@ class _PluginMarketPageState extends State<PluginMarketPage> {
     required IconData icon,
     required String title,
     String? description,
+    Widget? action,
   }) {
     final palette = context.omniPalette;
     return ListView(
@@ -315,6 +339,7 @@ class _PluginMarketPageState extends State<PluginMarketPage> {
                     ),
                   ),
                 ],
+                if (action != null) ...[const SizedBox(height: 8), action],
               ],
             ),
           ),

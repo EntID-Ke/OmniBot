@@ -43,6 +43,7 @@ import cn.com.omnimind.baselib.llm.SceneVoiceConfigStore
 import cn.com.omnimind.baselib.util.APPPackageUtil
 import cn.com.omnimind.baselib.util.OmniLog
 import cn.com.omnimind.baselib.util.RuntimeLogStore
+import cn.com.omnimind.baselib.util.RuntimeLogEntry
 import cn.com.omnimind.baselib.util.exception.PermissionException
 import cn.com.omnimind.bot.R
 import cn.com.omnimind.bot.activity.MainActivity
@@ -1418,6 +1419,31 @@ class AssistsCoreManager(private val context: Context) {
         }
     }
 
+    fun recordFlutterRuntimeError(call: MethodCall, result: MethodChannel.Result) {
+        val source = if (call.argument<String>("source") == "framework") "framework" else "async"
+        val type = call.argument<String>("errorType")
+            ?.takeIf { it.length <= 128 && it.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) }
+            ?: "Error"
+        val stack = call.argument<String>("stackTrace")?.take(16_384)?.let {
+            AgentRuntimeErrorSupport.safeDiagnosticMessage(IllegalStateException(it))
+        }
+        workJob.launch {
+            try {
+                RuntimeLogStore.append(RuntimeLogEntry(
+                    level = "ERROR",
+                    tag = "Flutter",
+                    message = "$source: $type",
+                    stackTrace = stack,
+                ))
+                withContext(Dispatchers.Main) { result.success(true) }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    result.error("RECORD_FLUTTER_RUNTIME_LOG_ERROR", "Unable to save Flutter error location", null)
+                }
+            }
+        }
+    }
+
     fun clearRuntimeLogs(call: MethodCall, result: MethodChannel.Result) {
         workJob.launch {
             try {
@@ -1640,6 +1666,17 @@ class AssistsCoreManager(private val context: Context) {
                 val apiBase = if (baseUrlArg.isNotEmpty()) baseUrlArg else profile.baseUrl
                 val apiKey = if (useProvidedApiKey) apiKeyArg else profile.apiKey
                 val customHeaders = if (useProvidedCustomHeaders) customHeadersArg else profile.customHeaders
+                if (!profile.copy(baseUrl = apiBase, apiKey = apiKey, customHeaders = customHeaders).isConfigured()) {
+                    withContext(Dispatchers.Main) {
+                        result.error(
+                            "PROVIDER_CONFIG_REQUIRED",
+                            if (apiBase.isBlank()) "请先配置模型服务地址。"
+                            else "请先为 ${profile.name} 配置 API Key 或认证请求头。",
+                            mapOf("failureKind" to "configuration"),
+                        )
+                    }
+                    return@launch
+                }
                 val models = HttpController.fetchProviderModels(
                     apiBase = apiBase,
                     apiKey = apiKey,

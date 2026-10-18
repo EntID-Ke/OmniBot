@@ -73,6 +73,9 @@ class AssistsCoreChannel {
                 "clearRuntimeLogs" -> {
                     assistsCoreManager!!.clearRuntimeLogs(call, result)
                 }
+                "recordFlutterRuntimeError" -> {
+                    assistsCoreManager!!.recordFlutterRuntimeError(call, result)
+                }
                 "saveModelProviderProfile" -> {
                     assistsCoreManager!!.saveModelProviderProfile(call, result)
                 }

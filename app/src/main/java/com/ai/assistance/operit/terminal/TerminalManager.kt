@@ -112,14 +112,8 @@ class TerminalManager private constructor(
         // runtime is already installed, do not queue behind the full runtime
         // installer (which may be preparing OmniFlow or another terminal
         // session concurrently).
-        if (EmbeddedRuntimeInstaller.isCurrentDistributionReady(context)) {
-            return runCatching {
-                ensureShellScripts()
-                true
-            }.getOrElse {
-                Log.e(TAG, "Failed to prepare shell scripts", it)
-                false
-            }
+        if (EmbeddedRuntimeInstaller.isCurrentDistributionReady(context, distribution)) {
+            return prepareShellScripts(distribution, onProgress)
         }
         val status = EmbeddedRuntimeInstaller.ensureRuntimeInstalled(
             context = context,
@@ -129,13 +123,22 @@ class TerminalManager private constructor(
         if (!status.success) {
             return false
         }
-        return runCatching {
-            ensureShellScripts()
-            true
-        }.getOrElse {
-            Log.e(TAG, "Failed to prepare shell scripts", it)
-            false
-        }
+        return prepareShellScripts(distribution, onProgress)
+    }
+
+    private suspend fun prepareShellScripts(
+        distribution: TerminalDistribution.Spec,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ): Boolean = try {
+        ensureShellScripts()
+        true
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Log.e(TAG, "Failed to prepare shell scripts", error)
+        val message = error.message ?: "Failed to prepare terminal shell scripts."
+        onProgress(RuntimeInstallProgress("error", distribution.id, message, error = message))
+        false
     }
 
     fun prepareForMaintenance() {
@@ -265,17 +268,18 @@ class TerminalManager private constructor(
         onProcessStarted: ((Process) -> Unit)? = null,
         onOutputChunk: suspend (String) -> Unit = {}
     ): HiddenExecResult {
-        val environmentReady = withTimeoutOrNull(
-            HIDDEN_EXEC_ENVIRONMENT_TIMEOUT_MS
-        ) {
-            initializeEnvironment(distribution = distribution)
-        } ?: false
+        var initializationError: String? = null
+        val environmentReady = awaitHiddenExecEnvironment(timeoutMs) {
+            initializeEnvironment(distribution = distribution) { progress ->
+                progress.error?.takeIf(String::isNotBlank)?.let { initializationError = it }
+            }
+        }
         if (!environmentReady) {
             return HiddenExecResult(
                 output = "",
                 exitCode = -1,
                 state = HiddenExecResult.State.SHELL_NOT_READY,
-                error = "Terminal environment is not ready or initialization timed out."
+                error = initializationError ?: "Terminal environment is not ready or initialization timed out."
             )
         }
 
@@ -657,6 +661,16 @@ class TerminalManager private constructor(
         }
     }
 }
+
+// Setup can download a distribution before its command starts. Honor that
+// caller's budget rather than cancelling every first install after 10 seconds.
+// Short health probes remain bounded by their own requested timeout.
+internal suspend fun awaitHiddenExecEnvironment(
+    timeoutMs: Long?,
+    initialize: suspend () -> Boolean,
+): Boolean = withTimeoutOrNull(
+    timeoutMs?.takeIf { it > 0L } ?: HIDDEN_EXEC_ENVIRONMENT_TIMEOUT_MS,
+) { initialize() } ?: false
 
 internal suspend fun <T> withCancellableHiddenExecProcess(
     process: Process,

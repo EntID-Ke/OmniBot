@@ -90,7 +90,9 @@ class OmniPluginService {
   );
 
   static Future<List<OmniPluginItem>> listPlugins() async {
-    final raw = await _channel.invokeListMethod<dynamic>('list');
+    final raw = await _channel
+        .invokeListMethod<dynamic>('list')
+        .timeout(const Duration(seconds: 10));
     return raw
             ?.whereType<Map>()
             .map(OmniPluginItem.fromMap)

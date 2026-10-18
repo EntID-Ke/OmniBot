@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AgentRuntimeChannel {
     companion object {
@@ -69,9 +70,14 @@ class AgentRuntimeChannel {
 
         scope.launch {
             runCatching {
-                AgentRuntimeManager
-                    .getInstance(safeContext)
-                    .handleMethod(call.method, arguments)
+                // Profile/config loading and runtime setup perform disk and
+                // process I/O. Keep the Android platform thread free to draw
+                // Flutter and deliver replies/events while those calls run.
+                withContext(Dispatchers.IO) {
+                    AgentRuntimeManager
+                        .getInstance(safeContext)
+                        .handleMethod(call.method, arguments)
+                }
             }.onSuccess { payload ->
                 result.success(payload)
             }.onFailure { error ->

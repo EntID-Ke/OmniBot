@@ -4,10 +4,19 @@ import android.content.Context
 import cn.com.omnimind.bot.agent.AgentToolDefinitions
 import cn.com.omnimind.bot.plugin.official.OmniVlmLiteProvider
 import cn.com.omnimind.bot.plugin.official.OfficialOmniPluginProviders
+import cn.com.omnimind.baselib.util.OmniLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 
 class OmniPluginHost private constructor(context: Context) {
     private val applicationContext = context.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var warmupJob: Job? = null
     private val platform = OmniPluginPlatform(
         providerSource = {
             OmniPluginProviderRegistry.createProviders(applicationContext)
@@ -19,8 +28,24 @@ class OmniPluginHost private constructor(context: Context) {
     )
 
     suspend fun list(): List<OmniPluginState> {
-        OfficialOmniPluginProviders.refreshCatalog(applicationContext)
-        return platform.list()
+        val catalog = withContext(Dispatchers.IO) { platform.catalog() }
+        warmup()
+        return catalog
+    }
+
+    @Synchronized
+    private fun warmup() {
+        if (warmupJob?.isActive == true) return
+        warmupJob = scope.launch {
+            try {
+                OfficialOmniPluginProviders.refreshCatalog(applicationContext)
+                platform.list()
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                OmniLog.w("[OmniPluginHost]", "Plugin preparation failed: ${error.message}")
+            }
+        }
     }
 
     suspend fun install(pluginId: String): OmniPluginState {

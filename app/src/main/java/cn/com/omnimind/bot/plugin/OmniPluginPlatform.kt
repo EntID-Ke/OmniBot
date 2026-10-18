@@ -21,19 +21,47 @@ class OmniPluginPlatform(
     private val activePlugins = linkedMapOf<String, ActivePlugin>()
     private val errors = linkedMapOf<String, String>()
     private var initialized = false
+    @Volatile
+    private var catalogSnapshot: Map<String, OmniPluginState> = emptyMap()
 
-    suspend fun list(): List<OmniPluginState> = mutex.withLock {
+    /** Read descriptors and persisted state without waiting for runtime installation. */
+    fun catalog(): List<OmniPluginState> {
+        val snapshot = catalogSnapshot
+        val stored = stateStore.read().associateBy { it.pluginId }
+        return providers().map { provider ->
+            snapshot[provider.descriptor.id] ?: stateFor(
+                provider,
+                stored[provider.descriptor.id],
+                active = false,
+                error = null,
+            )
+        }
+    }
+
+    private suspend fun <T> withStateLock(action: suspend () -> T): T = mutex.withLock {
+        try {
+            action()
+        } finally {
+            publishCatalogSnapshot()
+        }
+    }
+
+    private fun publishCatalogSnapshot() {
+        catalogSnapshot = providers().associate { it.descriptor.id to stateFor(it) }
+    }
+
+    suspend fun list(): List<OmniPluginState> = withStateLock {
         ensureInitialized()
         providers().map(::stateFor)
     }
 
-    suspend fun install(pluginId: String): OmniPluginState = mutex.withLock {
+    suspend fun install(pluginId: String): OmniPluginState = withStateLock {
         ensureInitialized()
         val provider = requireProvider(pluginId)
         requireCompatible(provider.descriptor)
         val existing = storedStates[pluginId]
         if (existing != null && !existing.installPending) {
-            return@withLock stateFor(provider)
+            return@withStateLock stateFor(provider)
         }
 
         try {
@@ -68,7 +96,7 @@ class OmniPluginPlatform(
         stateFor(provider)
     }
 
-    suspend fun setEnabled(pluginId: String, enabled: Boolean): OmniPluginState = mutex.withLock {
+    suspend fun setEnabled(pluginId: String, enabled: Boolean): OmniPluginState = withStateLock {
         ensureInitialized()
         val provider = requireProvider(pluginId)
         requireCompatible(provider.descriptor)
@@ -78,7 +106,7 @@ class OmniPluginPlatform(
         val current = storedStates[pluginId]
             ?: throw IllegalArgumentException("Plugin $pluginId is not installed")
         if (current.enabled == enabled && !(enabled && current.installPending)) {
-            return@withLock stateFor(provider)
+            return@withStateLock stateFor(provider)
         }
 
         if (enabled) {
@@ -119,7 +147,7 @@ class OmniPluginPlatform(
         stateFor(provider)
     }
 
-    suspend fun update(pluginId: String): OmniPluginState = mutex.withLock {
+    suspend fun update(pluginId: String): OmniPluginState = withStateLock {
         ensureInitialized()
         val provider = requireProvider(pluginId)
         requireCompatible(provider.descriptor)
@@ -156,13 +184,13 @@ class OmniPluginPlatform(
         stateFor(provider)
     }
 
-    suspend fun uninstall(pluginId: String) = mutex.withLock {
+    suspend fun uninstall(pluginId: String) = withStateLock {
         ensureInitialized()
         val provider = requireProvider(pluginId)
         require(!provider.descriptor.required) {
             "Required plugin $pluginId cannot be uninstalled"
         }
-        val current = storedStates[pluginId] ?: return@withLock
+        val current = storedStates[pluginId] ?: return@withStateLock
         val active = activePlugins[pluginId]
         active?.plugin?.onDisable()
         val nextStates = storedStates.values.filterNot { it.pluginId == pluginId }
@@ -178,7 +206,7 @@ class OmniPluginPlatform(
         provider.uninstall()
     }
 
-    suspend fun openSession(): OmniPluginSession = mutex.withLock {
+    suspend fun openSession(): OmniPluginSession = withStateLock {
         ensureInitialized()
         val requiredPluginIds = providers().asSequence()
             .filter { it.descriptor.required }
@@ -225,7 +253,7 @@ class OmniPluginPlatform(
         OmniPluginSession(toolDefinitions = definitions, toolHandlers = handlers)
     }
 
-    suspend fun listActionDefinitions(): List<OmniPluginActionDefinition> = mutex.withLock {
+    suspend fun listActionDefinitions(): List<OmniPluginActionDefinition> = withStateLock {
         ensureInitialized()
         activePlugins.flatMap { (pluginId, active) ->
             active.contribution.actionGroups.flatMap { group ->
@@ -236,7 +264,7 @@ class OmniPluginPlatform(
         }
     }
 
-    suspend fun openActionSession(pluginId: String): OmniPluginSession = mutex.withLock {
+    suspend fun openActionSession(pluginId: String): OmniPluginSession = withStateLock {
         ensureInitialized()
         val active = activePlugins[pluginId]
             ?: throw IllegalArgumentException("Plugin must be installed and enabled: $pluginId")
@@ -310,6 +338,7 @@ class OmniPluginPlatform(
         }
         reconciled.values.forEach { state -> storedStates[state.pluginId] = state }
         initialized = true
+        publishCatalogSnapshot()
 
         reconciled.values.filter { it.enabled || it.installPending }.forEach { state ->
             val provider = providerMap[state.pluginId]
@@ -460,16 +489,27 @@ class OmniPluginPlatform(
         }
     }
 
-    private fun stateFor(provider: OmniPluginProvider): OmniPluginState {
+    private fun stateFor(provider: OmniPluginProvider): OmniPluginState = stateFor(
+        provider,
+        storedStates[provider.descriptor.id],
+        activePlugins.containsKey(provider.descriptor.id),
+        errors[provider.descriptor.id],
+    )
+
+    private fun stateFor(
+        provider: OmniPluginProvider,
+        stored: OmniPluginStoredState?,
+        active: Boolean,
+        error: String?,
+    ): OmniPluginState {
         val descriptor = provider.descriptor
-        val stored = storedStates[descriptor.id]
         val compatible = descriptor.interfaceVersion == OmniPluginContract.CURRENT_INTERFACE_VERSION
         return OmniPluginState(
             descriptor = descriptor,
             installed = stored != null && !stored.installPending,
-            enabled = stored?.enabled == true && activePlugins.containsKey(descriptor.id),
+            enabled = stored?.enabled == true && active,
             compatible = compatible,
-            errorMessage = errors[descriptor.id] ?: if (!compatible) {
+            errorMessage = error ?: if (!compatible) {
                 "Requires plugin interface ${descriptor.interfaceVersion}; host supports ${OmniPluginContract.CURRENT_INTERFACE_VERSION}"
             } else {
                 null

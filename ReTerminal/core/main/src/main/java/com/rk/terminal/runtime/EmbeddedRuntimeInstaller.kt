@@ -127,8 +127,10 @@ object EmbeddedRuntimeInstaller {
         }
     }
 
-    fun isCurrentDistributionReady(context: Context): Boolean {
-        val distribution = TerminalDistribution.selected()
+    fun isCurrentDistributionReady(
+        context: Context,
+        distribution: TerminalDistribution.Spec = TerminalDistribution.selected(),
+    ): Boolean {
         val commonReady = commonAssets.all { File(context.filesDir, it.outputName).isFile }
         return commonReady && (
             isRootfsInstalled(context, distribution) ||

@@ -150,7 +150,12 @@ class _AgentModeSettingPageState extends State<AgentModeSettingPage> {
         // The native ACP catalog is the only source of truth. Keep an
         // already loaded catalog on transient errors, but never invent a
         // second list in Dart.
-        _error = formatAgentRuntimeErrorForUser(error, english: _english);
+        _error = error is TimeoutException
+            ? _text(
+                '读取助手列表超时，请重试。',
+                'Loading the agent list timed out. Please retry.',
+              )
+            : formatAgentRuntimeErrorForUser(error, english: _english);
       });
     }
   }

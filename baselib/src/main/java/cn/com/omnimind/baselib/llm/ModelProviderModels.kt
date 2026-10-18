@@ -15,7 +15,8 @@ data class ModelProviderConfig(
     val statusText: String? = null,
     val wireApi: String = OpenAiWireApi.CHAT_COMPLETIONS,
 ) {
-    fun isConfigured(): Boolean = baseUrl.isNotBlank()
+    fun isConfigured(): Boolean = baseUrl.isNotBlank() &&
+        hasProviderCredentials(providerType, apiKey, customHeaders)
 }
 
 data class ModelProviderProfile(
@@ -32,8 +33,21 @@ data class ModelProviderProfile(
     val wireApi: String = OpenAiWireApi.CHAT_COMPLETIONS,
     val revision: Long = 0L,
 ) {
-    fun isConfigured(): Boolean = baseUrl.isNotBlank()
+    fun isConfigured(): Boolean = baseUrl.isNotBlank() &&
+        hasProviderCredentials(sourceType, apiKey, customHeaders)
 }
+
+// Preset endpoints are seeded before credentials exist. They must not trigger
+// discovery or become usable bindings merely because their URL is present.
+// Custom/local providers can deliberately expose an anonymous endpoint.
+private fun hasProviderCredentials(
+    providerType: String,
+    apiKey: String,
+    customHeaders: Map<String, String>,
+): Boolean = OfficialProviderRegistry.findByKey(providerType) == null ||
+    apiKey.isNotBlank() || ProviderCustomHeaderUtils.sanitizeCustomHeaders(customHeaders).any { (name, value) ->
+        ProviderCustomHeaderUtils.shouldRedactHeader(name) && value.isNotBlank()
+    }
 
 /**
  * Wire capabilities owned by the resolved Provider route. These are not ACP

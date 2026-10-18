@@ -1001,7 +1001,9 @@ class AgentRuntimeService {
   }
 
   static Future<AcpAgentCatalog> listAgents() async {
-    return AcpAgentCatalog.fromMap(await _invokeMap('agent/list'));
+    return AcpAgentCatalog.fromMap(
+      await _invokeMap('agent/list').timeout(const Duration(seconds: 10)),
+    );
   }
 
   static Future<AcpAgentCatalog> refreshAgents() async {

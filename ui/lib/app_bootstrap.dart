@@ -14,6 +14,7 @@ import 'package:ui/services/omnibot_resource_service.dart';
 import 'package:ui/services/app_background_service.dart';
 import 'package:ui/services/scheduled_task_scheduler_service.dart';
 import 'package:ui/services/storage_service.dart';
+import 'package:ui/services/runtime_log_service.dart';
 import 'package:ui/theme/app_theme_controller.dart';
 import 'package:ui/theme/app_theme_mode.dart';
 import 'package:ui/theme/app_theme.dart';
@@ -46,6 +47,7 @@ Future<void> bootstrapMain(List<String> args) async {
     GoRouterManager.setInitialRoute(initialRoute);
   }
   WidgetsFlutterBinding.ensureInitialized();
+  RuntimeLogService.installFlutterErrorReporting();
   installOmnibotErrorWidget();
   try {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);

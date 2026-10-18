@@ -67,6 +67,49 @@ void main() {
         .setMockMethodCallHandler(pluginPlatformChannel, null);
   });
 
+  testWidgets(
+    'a stalled catalog stops loading and retry only rereads metadata',
+    (tester) async {
+      final pending = Completer<Map<String, dynamic>>();
+      final calls = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(agentRuntimeChannel, (call) async {
+            calls.add(call.method);
+            if (call.method != 'agent/list') return null;
+            if (calls.where((method) => method == 'agent/list').length == 1) {
+              return pending.future;
+            }
+            return {
+              'selectedAgentId': 'codex-acp',
+              'agents': [
+                _agent('codex-acp', 'Codex', 'codex-acp', 'unchecked'),
+              ],
+            };
+          });
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          locale: const Locale('zh'),
+          home: const AgentModeSettingPage(),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 11));
+      await tester.pumpAndSettle();
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('读取助手列表超时，请重试。'), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(find.text('Codex'), findsOneWidget);
+      expect(calls.where((method) => method == 'agent/list'), hasLength(2));
+      expect(calls, isNot(contains('agent/refresh')));
+      pending.complete({'agents': []});
+      await tester.pumpAndSettle();
+      expect(find.text('Codex'), findsOneWidget);
+    },
+  );
+
   testWidgets('installer exceptions remain in a readable result sheet', (
     tester,
   ) async {

@@ -7,6 +7,9 @@ import cn.com.omnimind.bot.agent.AgentToolRegistry
 import cn.com.omnimind.bot.agent.ToolExecutionResult
 import cn.com.omnimind.bot.agent.tool.handlers.ToolHandler
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -17,6 +20,51 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class OmniPluginPlatformTest {
+    @Test
+    fun `catalog does not install a default plugin just to show its descriptor`() = runBlocking {
+        val provider = RecordingProvider("com.omnimind.catalog", "catalog_action")
+        val platform = platform(
+            provider,
+            store = OneShotDefaultStore(),
+            defaultEnabledPluginIds = setOf(provider.descriptor.id),
+        )
+        val state = platform.catalog().single()
+        assertEquals(provider.descriptor.id, state.descriptor.id)
+        assertFalse(state.installed)
+        assertFalse(state.enabled)
+        assertEquals(0, provider.installCount)
+        platform.list()
+        assertTrue(platform.catalog().single().enabled)
+    }
+
+    @Test
+    fun `catalog remains readable while installation holds the lifecycle lock`() = runBlocking {
+        val provider = RecordingProvider("com.omnimind.slow", "slow_action")
+        val started = CompletableDeferred<Unit>()
+        val finish = CompletableDeferred<Unit>()
+        val slowProvider = object : OmniPluginProvider by provider {
+            override suspend fun install() {
+                started.complete(Unit)
+                finish.await()
+                provider.install()
+            }
+        }
+        val platform = platform(slowProvider)
+        val installation = async { platform.install(provider.descriptor.id) }
+        started.await()
+        try {
+            val state = withTimeout(500L) { platform.catalog().single() }
+            assertFalse(state.installed)
+            assertFalse(state.enabled)
+            assertEquals(0, provider.installCount)
+        } finally {
+            finish.complete(Unit)
+        }
+        installation.await()
+        assertTrue(platform.catalog().single().installed)
+        assertTrue(platform.catalog().single().enabled)
+        assertEquals(1, provider.installCount)
+    }
 
     @Test
     fun `empty platform preserves an empty plugin session`() = runBlocking {

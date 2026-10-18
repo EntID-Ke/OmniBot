@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -285,6 +286,59 @@ void main() {
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
+  });
+
+  testWidgets(
+    'failed catalog load offers retry instead of claiming no plugins',
+    (tester) async {
+      var attempts = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            if (call.method != 'list') return null;
+            attempts++;
+            if (attempts == 1) {
+              throw PlatformException(
+                code: 'PLUGIN_LIST_FAILED',
+                message: 'Runtime unavailable',
+              );
+            }
+            return <Map<String, Object?>>[_runtimePlugin()];
+          });
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      expect(find.text('暂无可用插件'), findsNothing);
+      expect(find.byKey(const Key('plugin-market-retry')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('plugin-market-retry')));
+      await tester.pumpAndSettle();
+      expect(find.text('OmniFlow'), findsOneWidget);
+      expect(attempts, 2);
+    },
+  );
+
+  testWidgets('stalled catalog can retry and ignores the late empty response', (
+    tester,
+  ) async {
+    final pending = Completer<List<Map<String, Object?>>>();
+    var attempts = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          if (call.method != 'list') return null;
+          attempts++;
+          if (attempts == 1) return pending.future;
+          return [_runtimePlugin()];
+        });
+    await tester.pumpWidget(_app());
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pumpAndSettle();
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const Key('plugin-market-retry')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('plugin-market-retry')));
+    await tester.pumpAndSettle();
+    expect(find.text('OmniFlow'), findsOneWidget);
+    pending.complete([]);
+    await tester.pumpAndSettle();
+    expect(find.text('OmniFlow'), findsOneWidget);
+    expect(attempts, 2);
   });
 
   testWidgets('shows official empty state when catalog has no plugins', (

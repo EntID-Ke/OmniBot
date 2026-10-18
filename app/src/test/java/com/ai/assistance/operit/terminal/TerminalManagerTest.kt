@@ -1,8 +1,10 @@
 package com.ai.assistance.operit.terminal
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertFalse
@@ -19,6 +21,43 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class TerminalManagerTest {
+    @Test
+    fun `setup initialization is not cancelled by the short health probe deadline`() = runBlocking {
+        assertTrue(awaitHiddenExecEnvironment(60_000L) {
+            delay(10_100L)
+            true
+        })
+    }
+
+    @Test
+    fun `short probe timeout cancels initialization and reports not ready`() = runBlocking {
+        val cancelled = AtomicBoolean(false)
+        assertFalse(awaitHiddenExecEnvironment(20L) {
+            try {
+                delay(30_000L)
+                true
+            } finally {
+                cancelled.set(true)
+            }
+        })
+        assertTrue(cancelled.get())
+    }
+
+    @Test
+    fun `caller cancellation is propagated during environment setup`() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val execution = async {
+            awaitHiddenExecEnvironment(60_000L) {
+                started.complete(Unit)
+                delay(30_000L)
+                true
+            }
+        }
+        started.await()
+        execution.cancelAndJoin()
+        assertTrue(execution.isCancelled)
+    }
+
     @Test
     fun `cancellation terminates a blocking hidden process`() = runBlocking {
         val process = BlockingProcess()
