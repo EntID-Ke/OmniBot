@@ -2319,7 +2319,14 @@ internal class LocalAcpRuntime(
     }
 
     private suspend fun listModels(args: Map<String, Any?>): Map<String, Any?> {
-        val session = ensureCatalogSession(args)
+        var session = ensureCatalogSession(args)
+        if (args["refreshConfig"] == true && requireAgentInfo().capabilities.loadSession) {
+            val id = session.sessionId.value
+            // Reuse the existing session/load owner and replay suppression;
+            // refreshing a catalog must not start or replay a prompt.
+            resumeThread(args + mapOf("sessionId" to id, "refreshConfig" to true))
+            session = sessions[id] ?: error("Refreshed ACP session is unavailable")
+        }
         val modelOption = sessionConfigOptions(session).firstOrNull {
             it.id.value == "model" || it.category == SessionConfigOptionCategory.MODEL
         } as? SessionConfigOption.Select

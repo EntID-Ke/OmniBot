@@ -140,6 +140,7 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
             return AgentProviderMapping(environment = mapOf(
                 "CODEX_HOME" to CODEX_SUBSCRIPTION_HOME,
                 "NO_BROWSER" to "1",
+                "OMNIBOT_CODEX_INCLUDE_HIDDEN_MODELS" to "1",
             ))
         }
         val provider = input.provider

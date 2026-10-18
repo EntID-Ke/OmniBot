@@ -79,6 +79,9 @@ class AssistsCoreChannel {
                 "startRuntimeDiagnostics", "stopRuntimeDiagnostics", "runtimeDiagnosticsState" -> {
                     assistsCoreManager!!.runtimeDiagnostics(call, result)
                 }
+                "consumeRuntimeDiagnosticLink" -> {
+                    result.success(cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticLink.consume())
+                }
                 "saveModelProviderProfile" -> {
                     assistsCoreManager!!.saveModelProviderProfile(call, result)
                 }

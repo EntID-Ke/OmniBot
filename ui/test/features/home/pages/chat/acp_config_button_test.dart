@@ -7,6 +7,59 @@ import 'package:ui/widgets/conversation_model_selector.dart';
 import 'package:ui/widgets/provider_vendor_icon.dart';
 
 void main() {
+  testWidgets(
+    'subscription catalog overrides a stale shared-provider callback',
+    (tester) async {
+      var providerOpened = false;
+      final writes = <Object>[];
+      Map<String, dynamic> response(String selected) => {
+        'sessionId': 'subscription-session',
+        'modelSource': 'acp',
+        'configOptions': [
+          {
+            'id': 'model',
+            'category': 'model',
+            'name': 'Model',
+            'type': 'select',
+            'currentValue': selected,
+            'options': [
+              {'value': 'official-a', 'name': 'Official A'},
+              {'value': 'official-b', 'name': 'Official B'},
+            ],
+          },
+        ],
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AcpConfigPanel(
+              load: () async => response('official-a'),
+              refresh: () async => response('official-a'),
+              configureModel: () async {
+                providerOpened = true;
+              },
+              write: (session, id, value) async {
+                writes.add([session, id, value]);
+                return response(value.toString());
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('acp-config-model')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Official B'));
+      await tester.pumpAndSettle();
+      expect(providerOpened, isFalse);
+      expect(writes, [
+        ['subscription-session', 'model', 'official-b'],
+      ]);
+      expect(find.text('Official B'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final readOnly in [false, true]) {
     testWidgets(
       'shared model selection uses configured connections (readOnly=$readOnly)',

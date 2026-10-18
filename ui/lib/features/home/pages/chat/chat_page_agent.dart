@@ -51,11 +51,11 @@ mixin _ChatPageAgentMixin on _ChatPageStateBase {
         normalizedAgentId == _kRemoteCodexModeAgentId) {
       return false;
     }
-    // Every local ACP Agent consumes the app's configured Provider catalog.
-    // The Harness is an execution runtime, not a model authority. An allow-list
-    // here caused newly installed Harnesses (and legacy IDs)
-    // to fall back to their own one-model catalog.
-    return true;
+    return usesSharedProviderModels(
+      agentId: normalizedAgentId,
+      status: _agentRuntimeStatus,
+      catalog: _agentCatalog,
+    );
   }
 
   Future<List<String>> _loadSharedProviderModelIds() async {

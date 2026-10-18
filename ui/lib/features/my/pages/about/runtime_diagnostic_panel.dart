@@ -21,6 +21,7 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
   bool _refreshing = false;
   int _revision = 0;
   String? _error;
+  bool _paired = false;
 
   bool get _active => _state['active'] == true;
 
@@ -28,7 +29,22 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
   void initState() {
     super.initState();
     unawaited(_refresh());
+    unawaited(_loadConnectionLink());
     _timer = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+  }
+
+  Future<void> _loadConnectionLink() async {
+    try {
+      final link = await RuntimeLogService.consumeDiagnosticLink();
+      if (!mounted || link == null || link['endpoint'] is! String || link['code'] is! String) return;
+      setState(() {
+        _endpoint.text = link['endpoint']?.toString() ?? '';
+        _code.text = link['code']?.toString() ?? '';
+        _paired = true;
+      });
+    } catch (_) {
+      // Manual setup stays available on older native hosts.
+    }
   }
 
   @override
@@ -70,7 +86,7 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
             );
       if (!mounted) return;
       setState(() => _state = state);
-      if (_active) _code.clear();
+      if (_active && !_paired) _code.clear();
     } on PlatformException catch (error) {
       if (mounted) {
         setState(() => _error = error.message ?? '日志诊断操作失败，请重试');
@@ -87,6 +103,8 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
     final status = _state['error'];
     final sent = _state['sentCount'] ?? 0;
     return ExpansionTile(
+      key: ValueKey('runtime-diagnostics-$_paired'),
+      initiallyExpanded: _paired,
       tilePadding: EdgeInsets.zero,
       title: const Text('联网诊断'),
       subtitle: Text(_active ? '采集中 · 已发送 $sent 次' : '临时发送真机运行日志'),
@@ -97,7 +115,11 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
           '可离开此页复现问题，返回此处停止。应用进程退出后不会恢复采集。',
         ),
         const SizedBox(height: 12),
-        if (!_active) ...[
+        if (!_active && _paired) ...[
+          const SizedBox(height: 8),
+          Text('连接已就绪：${Uri.tryParse(_endpoint.text)?.host ?? ''}'),
+          const Text('点击“开始采集”即可连接，无需填写地址或诊断码。'),
+        ] else if (!_active) ...[
           TextField(
             controller: _endpoint,
             enabled: !_busy,

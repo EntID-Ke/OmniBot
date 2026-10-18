@@ -2,6 +2,7 @@ package cn.com.omnimind.bot.util
 
 import android.content.Intent
 import cn.com.omnimind.bot.ui.channel.ChannelManager
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticLink
 
 object SchemeUtil {
 
@@ -10,6 +11,11 @@ object SchemeUtil {
      */
     fun pushRoute(intent: Intent, channelManager: ChannelManager, pagePath: String?) {
         var route = intent.extras?.getString("route")
+        if (RuntimeDiagnosticLink.receive(intent.dataString)) {
+            route = "/my/about/runtime-logs"
+            // Do not retain the connection code in the Activity's Intent.
+            intent.data = null
+        }
         if (!pagePath.isNullOrEmpty()) {
             route = pagePath
         }

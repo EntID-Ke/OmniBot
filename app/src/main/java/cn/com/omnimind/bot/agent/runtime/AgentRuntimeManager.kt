@@ -430,6 +430,8 @@ class AgentRuntimeManager private constructor(
     // ACP process can even start. Keep the write as a one-time initialization.
     @Volatile
     private var acpFilesystemCompatReady = false
+    private val modelCatalogPatchMutex = Mutex()
+    private val patchedModelCatalogs = mutableSetOf<String>()
     @Volatile
     private var eventListener: ((Map<String, Any?>) -> Unit)? = null
     private val eventDispatchLock = Any()
@@ -522,6 +524,10 @@ class AgentRuntimeManager private constructor(
         ).apply {
             if (runtime.kind == AgentRuntimeKind.LOCAL) {
                 putAll(mergeLocalRuntimeStatus(this, selectedLocalRuntime?.statusPayload().orEmpty()))
+                val profile = acpAgentProfileStore.list().firstOrNull {
+                    it.id == selectedLocalRuntime?.activeAgentId()
+                } ?: acpAgentProfileStore.selected()
+                put("modelSource", modelSourceFor(profile))
             } else {
                 put("protocol", "acp")
             }
@@ -777,6 +783,13 @@ class AgentRuntimeManager private constructor(
                 activeRuntime = AgentRuntimeKind.LOCAL
                 activeLocalDistributionId = TerminalDistribution.selected().id
             }
+            if (response is Map<*, *> && response["agents"] is List<*>) {
+                return response + mapOf("agents" to (response["agents"] as List<*>).map { item ->
+                    if (item !is Map<*, *>) return@map item
+                    val profile = acpAgentProfileStore.list().firstOrNull { it.id == item["id"] }
+                    if (profile == null) item else item + mapOf("modelSource" to modelSourceFor(profile))
+                })
+            }
             return response
         }
         if (
@@ -808,7 +821,11 @@ class AgentRuntimeManager private constructor(
             // LocalAcpRuntime is the owner of local ACP turn termination. Do
             // not run the remote Codex cleanup path here: local and remote
             // Agents are allowed to reuse opaque session ids concurrently.
-            return localRuntime.handleMethod(method, localArgs)
+            val response = localRuntime.handleMethod(method, localArgs)
+            val profile = acpAgentProfileStore.list().firstOrNull { it.id == localRuntime.activeAgentId() }
+            return if (response is Map<*, *> && profile != null) {
+                response + mapOf("modelSource" to modelSourceFor(profile))
+            } else response
         }
         if (runtime.kind == AgentRuntimeKind.REMOTE) {
             when (method) {
@@ -2069,6 +2086,21 @@ class AgentRuntimeManager private constructor(
             providerModels
         }
         val harnessAdapter = AcpHarnessAdapters.forProfile(profile)
+        harnessAdapter.modelCatalogPatchAsset?.let { asset ->
+            modelCatalogPatchMutex.withLock {
+                val patchKey = "${TerminalDistribution.selected().id}:$asset"
+                if (patchKey !in patchedModelCatalogs) {
+                    // Upgrade the installed, pinned adapter in place. This is
+                    // local compatibility code, never npm/bootstrap or login.
+                    val patch = appContext.assets.open(asset).bufferedReader().use { it.readText() }
+                    executeAgentConfigCommand(
+                        "PATH=/root/.npm-global/bin:\$PATH node - /root/.npm-global/lib/node_modules/@agentclientprotocol/codex-acp <<'OMNIBOT_CATALOG_PATCH'\n$patch\nOMNIBOT_CATALOG_PATCH",
+                        "harness-model-catalog-patch-${profile.id}",
+                    )
+                    patchedModelCatalogs.add(patchKey)
+                }
+            }
+        }
         // Re-read editable files at process launch; the running process keeps its snapshot.
         val existingHarnessConfig = harnessAdapter.launchConfigPath?.let { path ->
             readTerminalTextFile(
@@ -2231,7 +2263,7 @@ class AgentRuntimeManager private constructor(
         return buildAuthoritativeProviderModelPayload(
             providerModelIds = models.map { it.id },
             boundModel = currentAgentBoundModel(),
-        )
+        ) + mapOf("modelSource" to "shared_provider")
     }
 
     private suspend fun ensureManagedAcpAdapter(profile: AcpAgentProfile, force: Boolean = false) {
@@ -2621,6 +2653,9 @@ class AgentRuntimeManager private constructor(
 
     private fun usesSharedProvider(profile: AcpAgentProfile): Boolean =
         AcpAgentProfileStore.usesSharedProvider(profile) && authModeFor(profile) != CodexAuthMode.CHATGPT
+
+    private fun modelSourceFor(profile: AcpAgentProfile): String =
+        if (usesSharedProvider(profile)) "shared_provider" else "acp"
 
     private suspend fun requestAccountMethod(method: String, params: Any?): Any {
         if (resolveRuntime().kind == AgentRuntimeKind.REMOTE) {

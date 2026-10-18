@@ -33,6 +33,55 @@ void main() {
     );
   }
 
+  testWidgets(
+    'subscription model changes persist and reload dependent effort',
+    (tester) async {
+      var selected = 'official-a';
+      final writes = <Map>[];
+      final refreshes = <Map>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'model/list') {
+          refreshes.add(call.arguments as Map);
+          return {
+            'models': [
+              {'id': 'official-a', 'displayName': 'Official A'},
+              {'id': 'official-b', 'displayName': 'Official B'},
+            ],
+            'currentModelId': selected,
+            'reasoningEfforts': ['low', 'high'],
+            'currentReasoningEffort': 'high',
+          };
+        }
+        if (call.method == 'agent/config/write') {
+          writes.add(call.arguments as Map);
+          selected = call.arguments['model'] as String;
+          return {'model': selected, 'reasoningEffort': null};
+        }
+        return {};
+      });
+      await pump(tester);
+      await tester.tap(find.text('Refresh official model catalog'));
+      await tester.pumpAndSettle();
+      expect(refreshes.single['refreshConfig'], true);
+      await tester.tap(find.text('Official A'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Official B').last);
+      await tester.pumpAndSettle();
+      expect(writes.single['model'], 'official-b');
+      expect(writes.single['authMode'], 'chatgpt');
+      expect(writes.single['expectedAuthRevision'], 0);
+      final field = tester.widget<DropdownButtonFormField<String>>(
+        find.byKey(const ValueKey('codex-subscription-model-official-b')),
+      );
+      expect(field.initialValue, 'official-b');
+      expect(
+        find.byKey(const ValueKey('codex-subscription-effort-high')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('unsupported adapters fail before requesting authentication', (
     tester,
   ) async {

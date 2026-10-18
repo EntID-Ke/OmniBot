@@ -791,7 +791,59 @@ void main() {
     );
 
     expect(calls.map((call) => call.method), ['model/list']);
+    expect(calls.single.arguments, {'agentId': 'custom-agent', 'localRuntime': true});
   });
+
+  test(
+    'model source follows subscription auth without requiring an API provider',
+    () {
+      final catalog = AcpAgentCatalog.fromMap({
+        'selectedAgentId': 'codex-acp',
+        'agents': [
+          {'id': 'codex-acp', 'modelSource': 'shared_provider'},
+          {'id': 'other-agent', 'modelSource': 'shared_provider'},
+        ],
+      });
+      final subscription = AgentRuntimeStatus.fromMap({
+        'runtime': 'local',
+        'activeAgentId': 'codex-acp',
+        'modelSource': 'acp',
+      });
+      final api = AgentRuntimeStatus.fromMap({
+        'runtime': 'local',
+        'activeAgentId': 'codex-acp',
+        'modelSource': 'shared_provider',
+      });
+      expect(
+        usesSharedProviderModels(
+          agentId: 'codex-acp',
+          status: subscription,
+          catalog: catalog,
+        ),
+        isFalse,
+      );
+      expect(
+        usesSharedProviderModels(
+          agentId: 'other-agent',
+          status: subscription,
+          catalog: catalog,
+        ),
+        isTrue,
+      );
+      expect(
+        usesSharedProviderModels(
+          agentId: 'codex-acp',
+          status: api,
+          catalog: catalog,
+        ),
+        isTrue,
+      );
+      expect(
+        agentModelSourceKey(subscription),
+        isNot(agentModelSourceKey(api)),
+      );
+    },
+  );
 
   test('keeps Codex model sources separate', () {
     expect(

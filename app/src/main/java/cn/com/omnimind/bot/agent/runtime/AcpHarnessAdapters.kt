@@ -23,6 +23,8 @@ import kotlinx.serialization.json.put
 internal interface AcpHarnessAdapter {
     val supportsChatGptSubscription: Boolean
         get() = false
+    val modelCatalogPatchAsset: String?
+        get() = null
     fun environmentKeysToUnset(environment: Map<String, String>): Set<String> = emptySet()
     fun environmentOverridesAfterShell(environment: Map<String, String>): Map<String, String> = emptyMap()
     fun validateAuthenticationMethod(methodId: String, environment: Map<String, String>) = Unit
@@ -86,6 +88,7 @@ internal object AcpHarnessAdapters {
     val codex: AcpHarnessAdapter = object : AcpHarnessAdapter {
         override val configAdapterId = "codex"
         override val supportsChatGptSubscription = true
+        override val modelCatalogPatchAsset = "acp/codex-model-catalog.cjs"
         override fun environmentKeysToUnset(environment: Map<String, String>): Set<String> =
             if (environment["CODEX_HOME"] == CODEX_SUBSCRIPTION_HOME) {
                 CODEX_SUBSCRIPTION_UNSET_KEYS + environment.keys.filter {
@@ -93,7 +96,7 @@ internal object AcpHarnessAdapters {
                 }
             } else setOf("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
         override fun environmentOverridesAfterShell(environment: Map<String, String>): Map<String, String> =
-            environment.filterKeys { it == "CODEX_HOME" || it == "NO_BROWSER" }
+            environment.filterKeys { it == "CODEX_HOME" || it == "NO_BROWSER" || it == "OMNIBOT_CODEX_INCLUDE_HIDDEN_MODELS" }
         override fun validateAuthenticationMethod(methodId: String, environment: Map<String, String>) {
             val subscription = environment["CODEX_HOME"] == CODEX_SUBSCRIPTION_HOME
             require(subscription == (methodId == "chat-gpt" || methodId == "chat-gpt-device-code")) {

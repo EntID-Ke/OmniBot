@@ -197,12 +197,13 @@ class _CodexSubscriptionSettingsState extends State<CodexSubscriptionSettings> {
     }
   });
 
-  Future<void> _refreshModels() => _run(_loadModels);
+  Future<void> _refreshModels() => _run(() => _loadModels(refresh: true));
 
-  Future<void> _loadModels() async {
+  Future<void> _loadModels({bool refresh = false}) async {
     final catalog = await AgentRuntimeService.listModels(
       agentId: widget.agentId,
       localRuntime: true,
+      refresh: refresh,
     );
     final models = (catalog['models'] as List? ?? const [])
         .whereType<Map>()
@@ -241,12 +242,6 @@ class _CodexSubscriptionSettingsState extends State<CodexSubscriptionSettings> {
     );
     widget.onConfigurationChanged(payload);
     await _loadModels();
-    if (mounted) {
-      setState(() {
-        _model = payload['model']?.toString();
-        _effort = payload['reasoningEffort']?.toString();
-      });
-    }
   });
 
   @override

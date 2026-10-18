@@ -46,6 +46,8 @@ class RuntimeLogEntry {
 }
 
 class RuntimeLogService {
+  static Future<Map<dynamic, dynamic>?> consumeDiagnosticLink() =>
+      _assistCore.invokeMapMethod('consumeRuntimeDiagnosticLink');
   static const MethodChannel _assistCore = MethodChannel(
     'cn.com.omnimind.bot/AssistCoreEvent',
   );

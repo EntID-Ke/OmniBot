@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import hashlib
+import re
+import base64
 import tempfile
 import threading
 import unittest
@@ -59,6 +62,33 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(400, self.send(b"not json"))
         self.assertEqual(400, self.send(b"{}"))
         self.assertEqual(413, self.send(b"x" * (receiver.MAX_BYTES + 1)))
+
+    def test_private_connection_page_delivers_only_reviewed_apk_and_pairing(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join()
+        apk = Path(self.temp.name) / "reviewed.apk"
+        apk.write_bytes(b"reviewed fixture APK")
+        digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+        landing = {"ticket": "fixture-private-ticket", "public_url": "https://receiver.example",
+                   "apk": apk, "sha256": digest}
+        self.server = receiver.make_server("127.0.0.1", 0, self.code, self.temp.name, landing=landing)
+        self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.worker.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(self.url + "/connect/fixture-private-ticket") as response:
+            body = response.read().decode()
+            self.assertEqual("no-store", response.headers["Cache-Control"])
+            self.assertEqual("no-referrer", response.headers["Referrer-Policy"])
+        fragment = re.search(r"omnibotdiagnostics://connect#([A-Za-z0-9_-]+)", body).group(1)
+        payload = json.loads(base64.urlsafe_b64decode(fragment + "=" * (-len(fragment) % 4)))
+        self.assertEqual(self.code, payload["code"])
+        self.assertEqual("https://receiver.example/v1/runtime-logs", payload["endpoint"])
+        with opener.open(self.url + "/connect/fixture-private-ticket/app.apk") as response:
+            self.assertEqual(digest, hashlib.sha256(response.read()).hexdigest())
+        for path in ["/", "/latest.json", "/connect/wrong-ticket", "/connect/fixture-private-ticket/../latest.json"]:
+            self.assertEqual(404, self.send(path=path, method="GET"))
 
 
 if __name__ == "__main__":

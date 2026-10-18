@@ -35,6 +35,7 @@ class AgentRuntimeStatus {
     this.protocolVersion,
     this.activeAgentId,
     this.activeAgentName,
+    this.modelSource,
     this.capabilities = const <String, dynamic>{},
   });
 
@@ -57,6 +58,7 @@ class AgentRuntimeStatus {
   final int? protocolVersion;
   final String? activeAgentId;
   final String? activeAgentName;
+  final String? modelSource;
   final Map<String, dynamic> capabilities;
 
   /// Typed, forward-compatible view of the ACP capabilities advertised by
@@ -87,6 +89,7 @@ class AgentRuntimeStatus {
       protocolVersion: _intOrNull(source['protocolVersion']),
       activeAgentId: _stringOrNull(source['activeAgentId']),
       activeAgentName: _stringOrNull(source['activeAgentName']),
+      modelSource: _stringOrNull(source['modelSource']),
       capabilities:
           _normalizeMap(source['capabilities']) ?? const <String, dynamic>{},
     );
@@ -102,7 +105,31 @@ String agentModelSourceKey(AgentRuntimeStatus status) {
   if (status.runtime == 'remote' || status.remoteEnabled) {
     return 'remote';
   }
-  return 'local-${status.activeAgentId ?? 'agent'}';
+  return 'local-${status.activeAgentId ?? 'agent'}${status.modelSource == null ? '' : '-${status.modelSource}'}';
+}
+
+/// Authentication and model ownership are resolved by the native runtime.
+bool usesSharedProviderModels({
+  required String agentId,
+  required AgentRuntimeStatus status,
+  AcpAgentCatalog? catalog,
+}) {
+  final activeSource =
+      status.runtime != 'remote' &&
+          !status.remoteEnabled &&
+          status.activeAgentId == agentId
+      ? status.modelSource
+      : null;
+  final source =
+      activeSource ??
+      catalog?.agents
+          .where((agent) => agent.id == agentId)
+          .firstOrNull
+          ?.modelSource;
+  // Preserve the existing passive Provider picker until fast agent metadata
+  // arrives; opening it must not start a terminal probe. A declared ACP source
+  // always wins, including in the config panel's authoritative response.
+  return source == null || source == 'shared_provider';
 }
 
 bool isAgentCancellationSuccessful(Map<String, dynamic> response) {
@@ -581,6 +608,7 @@ class AcpAgentProfile {
     this.capabilities = const <String, dynamic>{},
     this.discoveryCommand,
     this.managedAdapter = false,
+    this.modelSource,
   });
 
   final String id;
@@ -601,6 +629,7 @@ class AcpAgentProfile {
   final Map<String, dynamic> capabilities;
   final String? discoveryCommand;
   final bool managedAdapter;
+  final String? modelSource;
 
   factory AcpAgentProfile.fromMap(Map<dynamic, dynamic> map) {
     final rawArguments = map['arguments'];
@@ -634,6 +663,7 @@ class AcpAgentProfile {
           _normalizeMap(map['capabilities']) ?? const <String, dynamic>{},
       discoveryCommand: _stringOrNull(map['discoveryCommand']),
       managedAdapter: map['managedAdapter'] == true,
+      modelSource: _stringOrNull(map['modelSource']),
     );
   }
 
@@ -1601,16 +1631,23 @@ class AgentRuntimeService {
   static Future<Map<String, dynamic>> listModels({
     String? agentId,
     bool localRuntime = false,
+    bool refresh = false,
   }) {
     return _invokeMap('model/list', {
       if (agentId != null) 'agentId': agentId,
       if (localRuntime) 'localRuntime': true,
+      if (refresh) 'refreshConfig': true,
     });
   }
 
   static Future<Map<String, dynamic>> listModelsForStatus(
     AgentRuntimeStatus status,
-  ) => listModels();
+  ) => listModels(
+    agentId: status.runtime == 'remote' || status.remoteEnabled
+        ? null
+        : status.activeAgentId,
+    localRuntime: status.runtime != 'remote' && !status.remoteEnabled,
+  );
 
   static Future<Map<String, dynamic>> listCollaborationModes() {
     return _invokeMap('collaborationMode/list');

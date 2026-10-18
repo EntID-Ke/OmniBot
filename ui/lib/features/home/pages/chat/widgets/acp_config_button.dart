@@ -170,6 +170,9 @@ class _AcpConfigPanelState extends State<AcpConfigPanel> {
   String? _error;
   bool _loading = true;
   bool _saving = false;
+  String? _modelSource;
+  bool get _configureSharedModel =>
+      widget.configureModel != null && _modelSource != 'acp';
   String? _expandedId;
   bool get _english => Localizations.localeOf(context).languageCode == 'en';
 
@@ -191,6 +194,7 @@ class _AcpConfigPanelState extends State<AcpConfigPanel> {
       if (!mounted) return;
       _sessionId = (response['sessionId'] ?? response['threadId'])?.toString();
       _options = acpConfigOptions(response);
+      _modelSource = response['modelSource']?.toString();
     } catch (error) {
       if (mounted) _error = formatAgentRuntimeErrorForUser(error);
     } finally {
@@ -289,8 +293,7 @@ class _AcpConfigPanelState extends State<AcpConfigPanel> {
           borderRadius: BorderRadius.circular(12),
           onTap: !_loading && !_saving && expandable
               ? () {
-                  if (option['category'] == 'model' &&
-                      widget.configureModel != null) {
+                  if (option['category'] == 'model' && _configureSharedModel) {
                     if (!widget.readOnly) unawaited(widget.configureModel!());
                     return;
                   }
@@ -554,7 +557,7 @@ class _AcpConfigPanelState extends State<AcpConfigPanel> {
                     ),
                   ),
                 if ((_error != null || _options.isEmpty) &&
-                    widget.configureModel != null)
+                    _configureSharedModel)
                   TextButton(
                     onPressed: widget.readOnly ? null : widget.configureModel,
                     child: Text(_english ? 'Choose model' : '选择模型'),
