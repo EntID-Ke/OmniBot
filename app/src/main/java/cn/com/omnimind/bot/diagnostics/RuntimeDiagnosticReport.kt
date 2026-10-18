@@ -8,7 +8,7 @@ import java.net.URI
 internal object RuntimeDiagnosticReport {
     private val gson = Gson()
     private val secretField = Regex(
-        """(?i)(["']?(?:[a-z_]*api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|token|authorization|password|passwd|secret|cookie|set-cookie)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)"""
+        """(?i)(["']?(?:[a-z_]*api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|device[_-]?code|user[_-]?code|code[_-]?verifier|authorization[_-]?code|client[_-]?secret|private[_-]?key|token|authorization|password|passwd|secret|cookie|set-cookie)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)"""
     )
 
     fun redact(text: String): String = text

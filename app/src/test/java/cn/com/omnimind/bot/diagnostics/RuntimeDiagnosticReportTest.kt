@@ -11,10 +11,11 @@ class RuntimeDiagnosticReportTest {
         val raw = """HTTP 401 {"api_key":"${secrets[0]}", "refresh_token": "${secrets[1]}", "id_token":"${secrets[2]}"} ${secrets[3]}
             Authorization: Bearer fake-bearer-secret
             Cookie: login=private-cookie
+            {"device_code":"private-device-code", "user_code":"abcd-efgh", "code_verifier":"private-pkce-value"}
             https://someone:password@example.com/api?token=private-query#private-fragment
         """.trimIndent()
         val json = RuntimeDiagnosticReport.encode("fixture", emptyMap(), listOf(RuntimeLogEntry(message = raw, stackTrace = raw)), 1)
-        (secrets + listOf("fake-bearer-secret", "private-cookie", "private-query", "private-fragment", "someone:password")).forEach {
+        (secrets + listOf("fake-bearer-secret", "private-cookie", "private-query", "private-fragment", "someone:password", "private-device-code", "abcd-efgh", "private-pkce-value")).forEach {
             assertFalse("leaked $it", json.contains(it))
         }
         assertTrue(json.contains("HTTP 401"))
