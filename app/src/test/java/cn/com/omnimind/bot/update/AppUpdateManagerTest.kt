@@ -11,6 +11,7 @@ import org.junit.Test
 class AppUpdateManagerTest {
     @Test
     fun normalizeVersionStripsLeadingV() {
+        assertEquals("0.6.3", AppUpdateManager.normalizeVersion("0.6.3+codex-test.2"))
         assertEquals("0.0.1", AppUpdateManager.normalizeVersion("v0.0.1"))
         assertEquals("1.2.3", AppUpdateManager.normalizeVersion("V1.2.3"))
     }

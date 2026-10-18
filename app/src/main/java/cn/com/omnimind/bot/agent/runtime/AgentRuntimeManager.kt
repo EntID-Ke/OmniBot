@@ -42,6 +42,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 import java.io.File
 import java.util.UUID
@@ -1756,6 +1757,9 @@ class AgentRuntimeManager private constructor(
         path: String,
         executorKey: String
     ): String {
+        withContext(Dispatchers.IO) {
+            readManagedAgentConfigFile(com.rk.libcommons.selectedTerminalHomeDir(), path)
+        }?.let { return it }
         val command = """
             set -eu
             printf '${AGENT_CONFIG_START_MARKER}\n'

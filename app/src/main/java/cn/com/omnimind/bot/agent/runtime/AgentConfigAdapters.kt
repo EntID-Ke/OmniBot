@@ -9,6 +9,9 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 
 /**
  * The app has one provider configuration. Official ACP runtimes each expose
@@ -86,6 +89,27 @@ internal data class AgentConfigWrite(
 internal interface AgentConfigFileAccess {
     suspend fun read(path: String, executorKey: String): String
     suspend fun write(path: String, content: String, executorKey: String)
+}
+
+/**
+ * /root is the selected distribution's existing managed home, without a
+ * separate PRoot bind. Reading a regular config needs neither extraction nor
+ * a running shell. Leave links to PRoot so absolute guest symlinks keep their
+ * namespace semantics rather than being followed as Android host paths.
+ */
+internal fun readManagedAgentConfigFile(home: File, path: String): String? {
+    if (!path.startsWith("/root/")) return null
+    val segments = path.removePrefix("/root/").split('/')
+    if (segments.any { it.isEmpty() || it == "." || it == ".." }) return null
+    var file = home
+    if (Files.isSymbolicLink(file.toPath())) return null
+    for (segment in segments) {
+        file = File(file, segment)
+        if (Files.isSymbolicLink(file.toPath())) return null
+    }
+    if (!file.exists()) return ""
+    if (!file.isFile) throw IOException("Agent configuration is not a regular file.")
+    return file.readText()
 }
 
 /**
