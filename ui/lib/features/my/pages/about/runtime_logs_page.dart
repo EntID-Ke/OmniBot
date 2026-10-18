@@ -10,6 +10,7 @@ import 'package:ui/theme/theme_context.dart';
 import 'package:ui/utils/ui.dart';
 import 'package:ui/widgets/common_app_bar.dart';
 import 'package:ui/widgets/settings_section_title.dart';
+import 'runtime_diagnostic_panel.dart';
 
 const int _runtimeLogLimit = 200;
 
@@ -593,6 +594,8 @@ class _RuntimeLogsPageState extends State<RuntimeLogsPage> {
           const EdgeInsets.fromLTRB(18, 10, 18, 28),
         ),
         children: [
+          const RuntimeDiagnosticPanel(),
+          const SizedBox(height: 16),
           if (_logs.isNotEmpty) ...[
             _buildOverviewSection(context),
             const SizedBox(height: 24),

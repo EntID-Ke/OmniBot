@@ -1,5 +1,7 @@
 package com.ai.assistance.operit.terminal
 
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -269,11 +271,17 @@ class TerminalManager private constructor(
         onOutputChunk: suspend (String) -> Unit = {}
     ): HiddenExecResult {
         var initializationError: String? = null
+        val initializationStartedAt = System.nanoTime()
+        RuntimeDiagnosticUploader.checkpoint("Terminal", "initializeEnvironment", "begin")
         val environmentReady = awaitHiddenExecEnvironment(timeoutMs) {
             initializeEnvironment(distribution = distribution) { progress ->
                 progress.error?.takeIf(String::isNotBlank)?.let { initializationError = it }
             }
         }
+        RuntimeDiagnosticUploader.checkpoint(
+            "Terminal", "initializeEnvironment", if (environmentReady) "ready" else "notReady",
+            (System.nanoTime() - initializationStartedAt) / 1_000_000,
+        )
         if (!environmentReady) {
             return HiddenExecResult(
                 output = "",

@@ -102,4 +102,20 @@ class RuntimeLogService {
   static Future<void> clear() async {
     await _assistCore.invokeMethod('clearRuntimeLogs');
   }
+
+  static Future<Map<dynamic, dynamic>> diagnosticsState() async =>
+      await _assistCore.invokeMapMethod('runtimeDiagnosticsState') ?? const {};
+
+  static Future<Map<dynamic, dynamic>> startDiagnostics(
+    String endpoint,
+    String code,
+  ) async =>
+      await _assistCore.invokeMapMethod('startRuntimeDiagnostics', {
+        'endpoint': endpoint.trim(),
+        'code': code.trim(),
+      }) ??
+      const {};
+
+  static Future<Map<dynamic, dynamic>> stopDiagnostics() async =>
+      await _assistCore.invokeMapMethod('stopRuntimeDiagnostics') ?? const {};
 }

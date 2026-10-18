@@ -44,6 +44,7 @@ import cn.com.omnimind.baselib.util.APPPackageUtil
 import cn.com.omnimind.baselib.util.OmniLog
 import cn.com.omnimind.baselib.util.RuntimeLogStore
 import cn.com.omnimind.baselib.util.RuntimeLogEntry
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
 import cn.com.omnimind.baselib.util.exception.PermissionException
 import cn.com.omnimind.bot.R
 import cn.com.omnimind.bot.activity.MainActivity
@@ -1414,6 +1415,32 @@ class AssistsCoreManager(private val context: Context) {
                 OmniLog.e(TAG, "listRuntimeLogs error: ${e.message}")
                 withContext(Dispatchers.Main) {
                     result.error("LIST_RUNTIME_LOGS_ERROR", e.message, null)
+                }
+            }
+        }
+    }
+
+    fun runtimeDiagnostics(call: MethodCall, result: MethodChannel.Result) {
+        workJob.launch {
+            try {
+                val state = withContext(Dispatchers.IO) {
+                    when (call.method) {
+                        "startRuntimeDiagnostics" -> RuntimeDiagnosticUploader.start(
+                            call.argument<String>("endpoint").orEmpty(),
+                            call.argument<String>("code").orEmpty(),
+                        )
+                        "stopRuntimeDiagnostics" -> RuntimeDiagnosticUploader.stop()
+                        else -> RuntimeDiagnosticUploader.state()
+                    }
+                }
+                withContext(Dispatchers.Main) { result.success(state) }
+            } catch (error: IllegalArgumentException) {
+                withContext(Dispatchers.Main) {
+                    result.error("DIAGNOSTICS_VALIDATION", error.message, null)
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    result.error("DIAGNOSTICS_ERROR", "无法启动日志诊断，请重试", null)
                 }
             }
         }

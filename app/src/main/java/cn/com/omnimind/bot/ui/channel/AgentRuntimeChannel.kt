@@ -1,6 +1,8 @@
 package cn.com.omnimind.bot.ui.channel
 
 import android.content.Context
+import android.os.SystemClock
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
 import cn.com.omnimind.bot.agent.AgentRuntimeErrorSupport
 import cn.com.omnimind.bot.agent.runtime.AgentRuntimeManager
 import cn.com.omnimind.baselib.util.OmniLog
@@ -70,6 +72,8 @@ class AgentRuntimeChannel {
             .orEmpty()
 
         scope.launch {
+            val startedAt = SystemClock.elapsedRealtime()
+            RuntimeDiagnosticUploader.checkpoint("AgentRuntime", call.method, "begin")
             runCatching {
                 // Profile/config loading and runtime setup perform disk and
                 // process I/O. Keep the Android platform thread free to draw
@@ -80,8 +84,10 @@ class AgentRuntimeChannel {
                         .handleMethod(call.method, arguments)
                 }
             }.onSuccess { payload ->
+                RuntimeDiagnosticUploader.checkpoint("AgentRuntime", call.method, "complete", SystemClock.elapsedRealtime() - startedAt)
                 result.success(payload)
             }.onFailure { error ->
+                RuntimeDiagnosticUploader.checkpoint("AgentRuntime", call.method, "failed", SystemClock.elapsedRealtime() - startedAt)
                 val detail = AgentRuntimeErrorSupport.safeDiagnosticMessage(error)
                 val failureKind = AgentRuntimeErrorSupport.failureKind(error)
                 if (error !is kotlinx.coroutines.CancellationException) {

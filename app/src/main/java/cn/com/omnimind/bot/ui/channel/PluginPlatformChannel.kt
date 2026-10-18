@@ -1,6 +1,8 @@
 package cn.com.omnimind.bot.ui.channel
 
 import android.content.Context
+import android.os.SystemClock
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
 import cn.com.omnimind.baselib.llm.ModelProviderConfigStore
 import cn.com.omnimind.baselib.llm.OfficialVlmOperationConfigStore
 import cn.com.omnimind.baselib.llm.OfficialVlmOperationRouteResolver
@@ -17,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -51,51 +54,59 @@ class PluginPlatformChannel {
             result.error("PLUGIN_CONTEXT_ERROR", "Plugin platform is not initialized", null)
             return
         }
-        val host = OmniPluginHost.get(safeContext)
         scope.launch {
+            val startedAt = SystemClock.elapsedRealtime()
+            RuntimeDiagnosticUploader.checkpoint("PluginPlatform", call.method, "begin")
             runCatching {
-                when (call.method) {
-                    "list" -> host.list().map(::stateToMap)
-                    "install" -> stateToMap(host.install(call.requirePluginId()))
-                    "update" -> stateToMap(host.update(call.requirePluginId()))
-                    "setEnabled" -> stateToMap(
-                        host.setEnabled(
+                withContext(Dispatchers.IO) {
+                    val host = OmniPluginHost.get(safeContext)
+                    when (call.method) {
+                        "list" -> host.list().map(::stateToMap)
+                        "install" -> stateToMap(host.install(call.requirePluginId()))
+                        "update" -> stateToMap(host.update(call.requirePluginId()))
+                        "setEnabled" -> stateToMap(
+                            host.setEnabled(
+                                pluginId = call.requirePluginId(),
+                                enabled = call.argument<Boolean>("enabled")
+                                    ?: throw IllegalArgumentException("enabled is required")
+                            )
+                        )
+                        "listActions" -> host.listActions().map { action ->
+                            mapOf(
+                                "id" to action.id,
+                                "pluginId" to action.ownerPluginId,
+                                "displayName" to action.displayName,
+                                "description" to action.description,
+                                "presentation" to action.presentation.toPlatformValue(),
+                            )
+                        }
+                        "invokeAction" -> host.invokeAction(
                             pluginId = call.requirePluginId(),
-                            enabled = call.argument<Boolean>("enabled")
-                                ?: throw IllegalArgumentException("enabled is required")
-                        )
-                    )
-                    "listActions" -> host.listActions().map { action ->
-                        mapOf(
-                            "id" to action.id,
-                            "pluginId" to action.ownerPluginId,
-                            "displayName" to action.displayName,
-                            "description" to action.description,
-                            "presentation" to action.presentation.toPlatformValue(),
-                        )
+                            actionId = call.requireActionId(),
+                            args = call.argument<Map<*, *>>("arguments").toJsonObject(),
+                        ).toPlatformValue()
+                        "getVlmReadiness" -> vlmReadiness()
+                        "sandboxInvoke" -> {
+                            val pluginId = call.requirePluginId()
+                            SandboxPluginBridgeRuntime(safeContext).invoke(
+                                pluginId = pluginId,
+                                method = call.argument<String>("method")?.trim().orEmpty(),
+                                params = call.argument<Map<*, *>>("params") ?: emptyMap<Any?, Any?>(),
+                            )
+                        }
+                        "uninstall" -> {
+                            val pluginId = call.requirePluginId()
+                            host.uninstall(pluginId)
+                            true
+                        }
+                        else -> throw NotImplementedError(call.method)
                     }
-                    "invokeAction" -> host.invokeAction(
-                        pluginId = call.requirePluginId(),
-                        actionId = call.requireActionId(),
-                        args = call.argument<Map<*, *>>("arguments").toJsonObject(),
-                    ).toPlatformValue()
-                    "getVlmReadiness" -> vlmReadiness()
-                    "sandboxInvoke" -> {
-                        val pluginId = call.requirePluginId()
-                        SandboxPluginBridgeRuntime(safeContext).invoke(
-                            pluginId = pluginId,
-                            method = call.argument<String>("method")?.trim().orEmpty(),
-                            params = call.argument<Map<*, *>>("params") ?: emptyMap<Any?, Any?>(),
-                        )
-                    }
-                    "uninstall" -> {
-                        val pluginId = call.requirePluginId()
-                        host.uninstall(pluginId)
-                        true
-                    }
-                    else -> throw NotImplementedError(call.method)
                 }
-            }.onSuccess(result::success).onFailure { error ->
+            }.onSuccess { payload ->
+                RuntimeDiagnosticUploader.checkpoint("PluginPlatform", call.method, "complete", SystemClock.elapsedRealtime() - startedAt)
+                result.success(payload)
+            }.onFailure { error ->
+                RuntimeDiagnosticUploader.checkpoint("PluginPlatform", call.method, "failed", SystemClock.elapsedRealtime() - startedAt)
                 if (error is NotImplementedError) {
                     result.notImplemented()
                 } else {
