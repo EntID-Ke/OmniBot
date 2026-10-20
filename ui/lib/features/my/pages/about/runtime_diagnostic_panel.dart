@@ -36,7 +36,11 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
   Future<void> _loadConnectionLink() async {
     try {
       final link = await RuntimeLogService.consumeDiagnosticLink();
-      if (!mounted || link == null || link['endpoint'] is! String || link['code'] is! String) return;
+      if (!mounted ||
+          link == null ||
+          link['endpoint'] is! String ||
+          link['code'] is! String)
+        return;
       setState(() {
         _endpoint.text = link['endpoint']?.toString() ?? '';
         _code.text = link['code']?.toString() ?? '';
@@ -123,7 +127,7 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
           TextField(
             controller: _endpoint,
             enabled: !_busy,
-            decoration: const InputDecoration(labelText: 'HTTPS 接收地址'),
+            decoration: const InputDecoration(labelText: '接收地址或诊断链接'),
             keyboardType: TextInputType.url,
             autocorrect: false,
             enableSuggestions: false,
@@ -132,7 +136,10 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
           TextField(
             controller: _code,
             enabled: !_busy,
-            decoration: const InputDecoration(labelText: '临时诊断码'),
+            decoration: const InputDecoration(
+              labelText: '临时诊断码',
+              helperText: '使用完整诊断链接时无需填写',
+            ),
             obscureText: true,
             autocorrect: false,
             enableSuggestions: false,

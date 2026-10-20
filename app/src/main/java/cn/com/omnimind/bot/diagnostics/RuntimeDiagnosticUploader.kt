@@ -15,13 +15,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.Call
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLSocket
 
 /** User-started, twenty-minute, outbound diagnostics. No account or MCP access. */
 internal object RuntimeDiagnosticUploader {
@@ -33,52 +33,61 @@ internal object RuntimeDiagnosticUploader {
         .retryOnConnectionFailure(false)
         .build()
     private val lock = Any()
-    private class Session(val endpoint: HttpUrl, val code: String) {
+    private class Session(val endpoint: RuntimeDiagnosticTarget, val code: String) {
         val id = UUID.randomUUID().toString()
         val deadline = SystemClock.elapsedRealtime() + DURATION_MS
         var job: Job? = null
         var call: Call? = null
+        var socket: SSLSocket? = null
         var lastSentAt: Long? = null
         var sentCount = 0
         var error: String? = null
     }
     private var session: Session? = null
 
-    internal fun validateEndpoint(value: String): HttpUrl {
-        val url = value.trim().toHttpUrlOrNull()
-        require(url != null && url.isHttps && url.username.isEmpty() && url.password.isEmpty() &&
-            url.query == null && url.fragment == null) {
-            "请填写不含账号、查询参数或片段的 HTTPS 接收地址"
-        }
-        return url
-    }
+    internal fun validateEndpoint(value: String): RuntimeDiagnosticTarget = RuntimeDiagnosticTarget.parse(value)
 
     fun start(endpoint: String, code: String): Map<String, Any?> {
-        val url = validateEndpoint(endpoint)
-        require(code.matches(Regex("[A-Za-z0-9_-]{32,128}"))) { "诊断码须为 32–128 位字母、数字、下划线或连字符" }
+        val link = if (endpoint.trim().startsWith("omnibotdiagnostics:")) {
+            requireNotNull(RuntimeDiagnosticLink.parse(endpoint.trim())) { "诊断链接无效，请重新复制完整链接" }
+        } else null
+        val url = validateEndpoint(link?.get("endpoint") ?: endpoint)
+        val accessCode = link?.get("code") ?: code
+        require(accessCode.matches(Regex("[A-Za-z0-9_-]{32,128}"))) { "诊断码须为 32–128 位字母、数字、下划线或连字符" }
         synchronized(lock) {
             stopLocked()
-            val current = Session(url, code)
+            val current = Session(url, accessCode)
             session = current
             current.job = scope.launch {
                 while (isActive && SystemClock.elapsedRealtime() < current.deadline) {
                     try {
                         val body = RuntimeDiagnosticReport.encode(current.id, deviceInfo(), RuntimeLogStore.listRecent(100))
-                        val call = createUploadCall(current.endpoint, current.code, body)
-                        synchronized(lock) {
-                            if (session !== current) return@launch
-                            current.call = call
-                        }
-                        call.execute().use { response ->
+                        val https = current.endpoint.https
+                        val error = if (https != null) {
+                            val call = createUploadCall(https, current.code, body)
                             synchronized(lock) {
-                                if (response.isSuccessful) {
-                                    current.lastSentAt = System.currentTimeMillis()
-                                    current.sentCount++
-                                    current.error = null
-                                } else {
-                                    current.error = "HTTP ${response.code}"
-                                }
+                                if (session !== current) return@launch
+                                current.call = call
                             }
+                            call.execute().use { response ->
+                                if (response.isSuccessful) null else "HTTP ${response.code}"
+                            }
+                        } else {
+                            RuntimeDiagnosticTcp.socket(current.endpoint).use { socket ->
+                                synchronized(lock) {
+                                    if (session !== current) return@launch
+                                    current.socket = socket
+                                }
+                                RuntimeDiagnosticTcp.send(socket, current.endpoint, current.code, body)
+                            }
+                            null
+                        }
+                        synchronized(lock) {
+                            if (error == null) {
+                                current.lastSentAt = System.currentTimeMillis()
+                                current.sentCount++
+                            }
+                            current.error = error
                         }
                     } catch (error: CancellationException) {
                         throw error
@@ -86,7 +95,7 @@ internal object RuntimeDiagnosticUploader {
                         // Do not expose a receiver URL, code, response body, or request in logs/UI.
                         synchronized(lock) { current.error = error.javaClass.simpleName }
                     } finally {
-                        synchronized(lock) { current.call = null }
+                        synchronized(lock) { current.call = null; current.socket = null }
                     }
                     delay(10_000)
                 }
@@ -114,6 +123,7 @@ internal object RuntimeDiagnosticUploader {
         session = null
         previous?.job?.cancel()
         previous?.call?.cancel()
+        runCatching { previous?.socket?.close() }
     }
 
     private fun stateLocked(): Map<String, Any?> {

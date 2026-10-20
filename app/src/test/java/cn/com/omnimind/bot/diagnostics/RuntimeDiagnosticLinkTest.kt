@@ -26,4 +26,13 @@ class RuntimeDiagnosticLinkTest {
         assertNull(RuntimeDiagnosticLink.parse(link().replace("//connect#", "//another#")))
         assertNull(RuntimeDiagnosticLink.parse("omnibotdiagnostics://connect#not-json"))
     }
+
+    @Test fun tcpLinkRequiresReceiverPinAndExplicitPort() {
+        val endpoint = "tls://192.0.2.10:50919/" + "a".repeat(64)
+        assertEquals(endpoint, RuntimeDiagnosticLink.parse(link(endpoint))?.get("endpoint"))
+        for (invalid in listOf("tls://192.0.2.10:50919", "tcp://192.0.2.10:50919", "tls://192.0.2.10/" + "a".repeat(64),
+            endpoint + "?secret=bad", endpoint.replace("192.0.2.10", "user@192.0.2.10"))) {
+            assertNull(RuntimeDiagnosticLink.parse(link(invalid)))
+        }
+    }
 }

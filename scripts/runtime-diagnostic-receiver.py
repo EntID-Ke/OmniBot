@@ -14,6 +14,9 @@ import json
 import os
 import secrets
 import shutil
+import socketserver
+import ssl
+import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +24,97 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 MAX_BYTES = 1_048_576
+
+
+def validate_report(raw):
+    report = json.loads(raw)
+    if (not isinstance(report, dict) or report.get("schemaVersion") != 1
+            or not isinstance(report.get("sessionId"), str)
+            or not isinstance(report.get("device"), dict)
+            or not isinstance(report.get("logs"), list) or len(report["logs"]) > 100):
+        raise ValueError("invalid report")
+
+
+def save_report(output, raw, lock):
+    with lock:
+        temp = output / "latest.json.tmp"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+        temp.replace(output / "latest.json")
+        (output / "last-received.txt").write_text(str(time.time()) + "\n")
+
+
+def make_tcp_server(bind, port, code, output, cert, key, lifetime=3600):
+    """Pinned TLS carrying OBD1 frames, never HTTP. Only an acknowledgement returns."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    deadline = time.monotonic() + lifetime
+    write_lock = threading.Lock()
+    slots = threading.BoundedSemaphore(8)
+
+    class Handler(socketserver.BaseRequestHandler):
+        def handle(self):
+            self.request.settimeout(10)
+            try:
+                with context.wrap_socket(self.request, server_side=True) as connection:
+                    if time.monotonic() >= deadline:
+                        connection.sendall(b"\x03")
+                        return
+                    def read_exact(size):
+                        data = bytearray()
+                        while len(data) < size:
+                            part = connection.recv(size - len(data))
+                            if not part:
+                                raise ValueError("incomplete frame")
+                            data.extend(part)
+                        return bytes(data)
+                    if read_exact(4) != b"OBD1":
+                        return
+                    code_size = struct.unpack("!H", read_exact(2))[0]
+                    if not 32 <= code_size <= 128:
+                        return
+                    if not hmac.compare_digest(read_exact(code_size), code.encode("ascii")):
+                        connection.sendall(b"\x01")
+                        return
+                    size = struct.unpack("!I", read_exact(4))[0]
+                    if not 0 < size <= MAX_BYTES:
+                        connection.sendall(b"\x02")
+                        return
+                    raw = read_exact(size)
+                    validate_report(raw)
+                    save_report(output, raw, write_lock)
+                    connection.sendall(b"\x00")
+            except (OSError, ValueError, UnicodeError):
+                pass  # Never print credentials, reports, or a peer's supplied bytes.
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+        def process_request(self, request, client_address):
+            if not slots.acquire(blocking=False):
+                self.shutdown_request(request)
+                return
+            try:
+                super().process_request(request, client_address)
+            except Exception:
+                slots.release()
+                raise
+
+        def process_request_thread(self, request, client_address):
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                slots.release()
+
+        def handle_error(self, request, client_address):
+            pass
+
+    return Server((bind, port), Handler)
 
 
 def make_server(bind, port, code, output, lifetime=3600, landing=None):
@@ -121,25 +215,13 @@ code{{overflow-wrap:anywhere;font-size:12px}}small{{color:#536475}}
                 raw = self.rfile.read(length)
                 if len(raw) != length:
                     raise ValueError("incomplete body")
-                report = json.loads(raw)
-                if (not isinstance(report, dict) or report.get("schemaVersion") != 1
-                        or not isinstance(report.get("sessionId"), str)
-                        or not isinstance(report.get("device"), dict)
-                        or not isinstance(report.get("logs"), list)
-                        or len(report["logs"]) > 100):
-                    raise ValueError("invalid report")
+                validate_report(raw)
             except (ValueError, UnicodeError, TimeoutError):
                 self.reply(400)
                 return
             # A bounded snapshot retains the app's recent log window. User content
             # never selects a filename, and concurrent uploads replace atomically.
-            with write_lock:
-                temp = output / "latest.json.tmp"
-                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(raw)
-                temp.replace(output / "latest.json")
-                (output / "last-received.txt").write_text(str(time.time()) + "\n")
+            save_report(output, raw, write_lock)
             self.reply(204)
 
     return ThreadingHTTPServer((bind, port), Handler)
@@ -156,6 +238,10 @@ def main():
     parser.add_argument("--apk", type=Path, help="Only an already-reviewed public APK")
     parser.add_argument("--apk-sha256", help="Approved APK SHA-256, checked before serving")
     parser.add_argument("--link-file", type=Path, help="Save the private connection URL locally")
+    parser.add_argument("--tcp-tls", action="store_true", help="Receive raw diagnostic frames over pinned TLS")
+    parser.add_argument("--tls-cert", type=Path)
+    parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--public-address", help="TCP tunnel host:port, including a literal IP if desired")
     args = parser.parse_args()
     os.umask(0o077)
     if not 60 <= args.lifetime <= 86400:
@@ -166,7 +252,22 @@ def main():
         code = secrets.token_urlsafe(32)
         stream.write(code + "\n")
     landing = None
-    if any([args.public_url, args.apk, args.apk_sha256, args.link_file]):
+    if args.tcp_tls:
+        if not all([args.tls_cert, args.tls_key, args.public_address, args.link_file]):
+            parser.error("TCP TLS requires --tls-cert, --tls-key, --public-address and --link-file")
+        if any([args.public_url, args.apk, args.apk_sha256]):
+            parser.error("TCP diagnostic transport does not serve web pages or APKs")
+        address = urlsplit("tls://" + args.public_address)
+        if (not address.hostname or not address.port or address.username or address.password
+                or address.path or address.query or address.fragment):
+            parser.error("--public-address must be host:port")
+        der = ssl.PEM_cert_to_DER_cert(args.tls_cert.read_text())
+        endpoint = "tls://" + args.public_address + "/" + hashlib.sha256(der).hexdigest()
+        payload = json.dumps({"schemaVersion": 1, "endpoint": endpoint, "code": code}, separators=(",", ":")).encode()
+        args.link_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with args.link_file.open("x") as stream:
+            stream.write("omnibotdiagnostics://connect#" + base64.urlsafe_b64encode(payload).decode().rstrip("=") + "\n")
+    elif any([args.public_url, args.apk, args.apk_sha256, args.link_file]):
         if not all([args.public_url, args.apk, args.apk_sha256, args.link_file]):
             parser.error("connection pages require --public-url, --apk, --apk-sha256 and --link-file")
         origin = urlsplit(args.public_url)
@@ -182,11 +283,12 @@ def main():
         args.link_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with args.link_file.open("x") as stream:
             stream.write(landing["public_url"] + "/connect/" + landing["ticket"] + "\n")
-    server = make_server(args.bind, args.port, code, args.output, args.lifetime, landing)
+    server = (make_tcp_server(args.bind, args.port, code, args.output, args.tls_cert, args.tls_key, args.lifetime)
+              if args.tcp_tls else make_server(args.bind, args.port, code, args.output, args.lifetime, landing))
     timer = threading.Timer(args.lifetime, server.shutdown)
     timer.daemon = True
     timer.start()
-    print(f"Receiver listening on {args.bind}:{server.server_port}; code saved locally", flush=True)
+    print(f"Receiver listening on {args.bind}:{server.server_address[1]}; code saved locally", flush=True)
     try:
         server.serve_forever()
     finally:

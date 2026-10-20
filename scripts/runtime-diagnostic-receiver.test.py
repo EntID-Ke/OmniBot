@@ -3,6 +3,10 @@ import json
 import hashlib
 import re
 import base64
+import socket
+import ssl
+import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -89,6 +93,75 @@ class ReceiverTest(unittest.TestCase):
             self.assertEqual(digest, hashlib.sha256(response.read()).hexdigest())
         for path in ["/", "/latest.json", "/connect/wrong-ticket", "/connect/fixture-private-ticket/../latest.json"]:
             self.assertEqual(404, self.send(path=path, method="GET"))
+
+
+class TcpReceiverTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.certs = tempfile.TemporaryDirectory()
+        cls.cert = Path(cls.certs.name) / "fixture.pem"
+        cls.key = Path(cls.certs.name) / "fixture.key"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                        "-nodes", "-days", "1", "-subj", "/CN=diagnostic-fixture", "-keyout", str(cls.key),
+                        "-out", str(cls.cert)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.certs.cleanup()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.code = "a" * 43
+        self.server = receiver.make_tcp_server("127.0.0.1", 0, self.code, self.temp.name, self.cert, self.key)
+        self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.worker.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join()
+        self.temp.cleanup()
+
+    def send(self, body, code=None, size=None, magic=b"OBD1"):
+        context = ssl.create_default_context(cafile=str(self.cert))
+        with socket.create_connection(self.server.server_address, timeout=5) as raw:
+            with context.wrap_socket(raw, server_hostname="diagnostic-fixture") as connection:
+                access = (code or self.code).encode()
+                connection.sendall(magic + struct.pack("!H", len(access)) + access + struct.pack("!I", size or len(body)) + body)
+                return connection.recv(1)
+
+    def test_tls_frame_is_authenticated_and_saved_with_private_permissions(self):
+        body = b'{"schemaVersion":1,"sessionId":"fixture","device":{},"logs":[]}'
+        self.assertEqual(b"\x00", self.send(body))
+        saved = Path(self.temp.name) / "latest.json"
+        self.assertEqual(body, saved.read_bytes())
+        self.assertEqual(0o600, saved.stat().st_mode & 0o777)
+
+    def test_wrong_code_invalid_report_and_oversize_frame_cannot_write(self):
+        self.assertEqual(b"\x01", self.send(b"{}", code="b" * 43))
+        self.assertEqual(b"\x02", self.send(b"{}", size=receiver.MAX_BYTES + 1))
+        self.assertEqual(b"", self.send(b"{}"))
+        self.assertEqual(b"", self.send(b"{}", magic=b"GET "))
+        self.assertFalse((Path(self.temp.name) / "latest.json").exists())
+
+    def test_plaintext_and_expired_session_cannot_write(self):
+        with socket.create_connection(self.server.server_address, timeout=5) as connection:
+            connection.sendall(b"OBD1plaintext-is-rejected")
+            try:
+                self.assertEqual(b"", connection.recv(32))
+            except ConnectionResetError:
+                pass
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join()
+        self.server = receiver.make_tcp_server("127.0.0.1", 0, self.code, self.temp.name, self.cert, self.key, lifetime=-1)
+        self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.worker.start()
+        context = ssl.create_default_context(cafile=str(self.cert))
+        with socket.create_connection(self.server.server_address, timeout=5) as raw:
+            with context.wrap_socket(raw, server_hostname="diagnostic-fixture") as connection:
+                self.assertEqual(b"\x03", connection.recv(1))
+        self.assertFalse((Path(self.temp.name) / "latest.json").exists())
 
 
 if __name__ == "__main__":
