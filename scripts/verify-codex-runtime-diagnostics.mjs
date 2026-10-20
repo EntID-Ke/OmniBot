@@ -56,6 +56,7 @@ const readline = require('node:readline');
 readline.createInterface({input:process.stdin}).on('line', line => {
   const m = JSON.parse(line); if (m.id === undefined) return;
   const error = {code:-32603,message:'fixture_upstream_root_cause access_token=fixture-wire-secret'};
+  if (m.method === 'initialize') process.stderr.write('fixture_runtime_stderr token=fixture-runtime-secret\\n');
   process.stdout.write(JSON.stringify(m.method === 'initialize'
     ? {id:m.id,result:{userAgent:'fixture',codexHome:${JSON.stringify(root)}}}
     : {id:m.id,error})+'\\n');
@@ -93,7 +94,9 @@ readline.createInterface({input:process.stdin}).on('line', line => {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         assert(stderr.includes('fixture_upstream_root_cause'), 'Real SDK lost diagnostic cause');
+        assert(stderr.includes('fixture_runtime_stderr'), 'Missing corresponding Codex stderr tail');
         assert(!stderr.includes('fixture-wire-secret'), 'Real SDK diagnostic leaked credential');
+        assert(!stderr.includes('fixture-runtime-secret'), 'Codex stderr leaked credential');
       })(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Pinned wire fixture timed out')), 15_000); }),
     ]);

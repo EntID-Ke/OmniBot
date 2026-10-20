@@ -35,11 +35,13 @@ function omnibotDiagnosticError(error, depth = 0) {
   }
   return result;
 }
-async function omnibotObserveAcpFailure(method, operation) {
+async function omnibotObserveAcpFailure(method, operation, recentStderr = () => '') {
   try { return await operation(); }
   catch (error) {
     try {
-      console.error('[OMNIBOT_ACP_ERROR] ' + JSON.stringify({method, error: omnibotDiagnosticError(error)}));
+      console.error('[OMNIBOT_ACP_ERROR] ' + JSON.stringify({method,
+        error: omnibotDiagnosticError(error),
+        stderr: omnibotDiagnosticRedact(recentStderr()).slice(-2048)}));
     } catch { /* A diagnostic must never replace the original failure. */ }
     throw error;
   }
@@ -59,7 +61,7 @@ async function omnibotObserveAcpFailure(method, operation) {
     ['session/prompt', 'prompt(ctx.params, ctx.signal)'],
   ]) {
     replaceOnce(`(ctx) => getAgent().${call})`,
-      `(ctx) => omnibotObserveAcpFailure(${JSON.stringify(method)}, () => getAgent().${call}))`);
+      `(ctx) => omnibotObserveAcpFailure(${JSON.stringify(method)}, () => getAgent().${call}, () => getAgent().getRecentStderr()))`);
   }
   const temporary = file + '.omnibot-diagnostic-tmp';
   fs.writeFileSync(temporary, source, {mode: fs.statSync(file).mode});
