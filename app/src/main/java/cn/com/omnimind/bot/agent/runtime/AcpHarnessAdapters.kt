@@ -25,6 +25,8 @@ internal interface AcpHarnessAdapter {
         get() = false
     val modelCatalogPatchAsset: String?
         get() = null
+    val diagnosticPatchAsset: String?
+        get() = null
     fun environmentKeysToUnset(environment: Map<String, String>): Set<String> = emptySet()
     fun environmentOverridesAfterShell(environment: Map<String, String>): Map<String, String> = emptyMap()
     fun validateAuthenticationMethod(methodId: String, environment: Map<String, String>) = Unit
@@ -89,6 +91,7 @@ internal object AcpHarnessAdapters {
         override val configAdapterId = "codex"
         override val supportsChatGptSubscription = true
         override val modelCatalogPatchAsset = "acp/codex-model-catalog.cjs"
+        override val diagnosticPatchAsset = "acp/codex-runtime-diagnostics.cjs"
         override fun environmentKeysToUnset(environment: Map<String, String>): Set<String> =
             if (environment["CODEX_HOME"] == CODEX_SUBSCRIPTION_HOME) {
                 CODEX_SUBSCRIPTION_UNSET_KEYS + environment.keys.filter {

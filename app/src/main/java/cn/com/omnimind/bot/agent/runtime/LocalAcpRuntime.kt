@@ -7,6 +7,8 @@ import android.util.Base64
 import android.util.Log
 import cn.com.omnimind.bot.agent.AgentRuntimeErrorSupport
 import cn.com.omnimind.bot.BuildConfig
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticReport
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
 import cn.com.omnimind.bot.agent.readAgentAttachmentBytes
 import cn.com.omnimind.bot.agent.AgentWorkspaceManager
 import cn.com.omnimind.bot.agent.AgentWorkspaceAttachmentSupport
@@ -826,6 +828,7 @@ internal class LocalAcpRuntime(
                     }
                 }
                 Log.e(TAG, "$message profile=${profile.id}")
+                RuntimeDiagnosticUploader.failure("LocalAcpRuntime", "process/exit", IllegalStateException(message))
                 profileStore.saveHealth(
                     profile.id,
                     failedAgentHealth(IllegalStateException(message))
@@ -843,6 +846,7 @@ internal class LocalAcpRuntime(
             }
         } catch (error: Throwable) {
             val diagnostics = nextConnection.diagnosticSummary()
+            RuntimeDiagnosticUploader.failure("LocalAcpRuntime", "initialize", error, diagnostics)
             // Until initialize succeeds these resources belong to this
             // attempt, not disconnectLocked(). Cancellation must release
             // them as well, in a context where pipe cleanup can suspend.
@@ -1946,10 +1950,9 @@ internal class LocalAcpRuntime(
                 catalogSession
             } else {
                 val startedAtNanos = System.nanoTime()
-                requireClient().newSession(
-                    sessionCreationParameters(cwd, args),
-                    operationsFactory()
-                ).also {
+                observeAcpRequest("session/new") {
+                    requireClient().newSession(sessionCreationParameters(cwd, args), operationsFactory())
+                }.also {
                     registerSession(it, cwd)
                     Log.i(
                         TAG,
@@ -2055,10 +2058,9 @@ internal class LocalAcpRuntime(
                     args.stringValue("cwd")
                         ?: bindingRepository.getBindingByThreadId(threadId)?.cwd
                 )
-                val fresh = requireClient().newSession(
-                    sessionCreationParameters(cwd, args),
-                    operationsFactory()
-                )
+                val fresh = observeAcpRequest("session/new") {
+                    requireClient().newSession(sessionCreationParameters(cwd, args), operationsFactory())
+                }
                 registerSession(fresh, cwd)
                 profileStore.bindSession(fresh.sessionId.value, activeAgentId())
                 val conversationId = bindingRepository.ensureBinding(
@@ -2087,9 +2089,11 @@ internal class LocalAcpRuntime(
                     val cwd = sessionCwds[threadId] ?: "/workspace"
                     val refreshed = try {
                         replaySuppressedThreads.add(threadId)
-                        requireClient().loadSession(
-                            SessionId(threadId), sessionCreationParameters(cwd, args), operationsFactory()
-                        )
+                        observeAcpRequest("session/load") {
+                            requireClient().loadSession(
+                                SessionId(threadId), sessionCreationParameters(cwd, args), operationsFactory()
+                            )
+                        }
                     } finally {
                         replaySuppressedThreads.remove(threadId)
                     }
@@ -2114,33 +2118,27 @@ internal class LocalAcpRuntime(
             val restored = try {
                 when {
                     preferResume && capabilities.sessionCapabilities.resume != null ->
-                        requireClient().resumeSession(
-                            SessionId(threadId),
-                            parameters,
-                            operationsFactory()
-                        )
+                        observeAcpRequest("session/resume") {
+                            requireClient().resumeSession(SessionId(threadId), parameters, operationsFactory())
+                        }
                     capabilities.loadSession -> {
                         replayingThreads.add(threadId)
                         if (shouldSuppressAcpReplay(threadId)) {
                             replaySuppressedThreads.add(threadId)
                         }
                         try {
-                            requireClient().loadSession(
-                                SessionId(threadId),
-                                parameters,
-                                operationsFactory()
-                            )
+                            observeAcpRequest("session/load") {
+                                requireClient().loadSession(SessionId(threadId), parameters, operationsFactory())
+                            }
                         } finally {
                             replayingThreads.remove(threadId)
                             replaySuppressedThreads.remove(threadId)
                         }
                     }
                     !preferResume && capabilities.sessionCapabilities.resume != null ->
-                        requireClient().resumeSession(
-                            SessionId(threadId),
-                            parameters,
-                            operationsFactory()
-                        )
+                        observeAcpRequest("session/resume") {
+                            requireClient().resumeSession(SessionId(threadId), parameters, operationsFactory())
+                        }
                     else -> null
                 }
             } catch (error: Throwable) {
@@ -2155,10 +2153,9 @@ internal class LocalAcpRuntime(
                     "ACP session/load could not restore session=${compactId(threadId)}; " +
                         "creating a fresh session with the same conversation binding"
                 )
-                val fresh = requireClient().newSession(
-                    parameters,
-                    operationsFactory()
-                )
+                val fresh = observeAcpRequest("session/new") {
+                    requireClient().newSession(parameters, operationsFactory())
+                }
                 registerSession(fresh, cwd)
                 profileStore.bindSession(fresh.sessionId.value, activeAgentId())
                 val conversationId = bindingRepository.ensureBinding(
@@ -2756,6 +2753,9 @@ internal class LocalAcpRuntime(
                 failure = error
             } finally {
                 promptExecutions.remove(threadId, execution)
+                failure?.let {
+                    RuntimeDiagnosticUploader.failure("LocalAcpRuntime", "session/prompt", it, activeConnection.diagnosticSummary())
+                }
                 val status = resolveTurnTerminalStatus(
                     stopReason = stopReason,
                     promptResponseReceived = promptResponseReceived,
@@ -3205,13 +3205,26 @@ internal class LocalAcpRuntime(
                 return@withLock it
             }
             val cwd = normalizeCwd(args.stringValue("cwd"))
-            requireClient().newSession(
-                sessionCreationParameters(cwd),
-                operationsFactory()
-            ).also { session ->
+            observeAcpRequest("session/new") {
+                requireClient().newSession(sessionCreationParameters(cwd), operationsFactory())
+            }.also { session ->
                 registerSession(session, cwd)
                 catalogSessionId = session.sessionId.value
             }
+        }
+    }
+
+    private suspend fun <T> observeAcpRequest(method: String, operation: suspend () -> T): T {
+        val startedAt = System.nanoTime()
+        RuntimeDiagnosticUploader.checkpoint("LocalAcpRuntime", method, "begin")
+        try {
+            return operation().also {
+                RuntimeDiagnosticUploader.checkpoint("LocalAcpRuntime", method, "complete", elapsedMillis(startedAt))
+            }
+        } catch (error: Throwable) {
+            RuntimeDiagnosticUploader.checkpoint("LocalAcpRuntime", method, "failed", elapsedMillis(startedAt))
+            RuntimeDiagnosticUploader.failure("LocalAcpRuntime", method, error, connection?.diagnosticSummary().orEmpty())
+            throw error
         }
     }
 
@@ -4476,8 +4489,10 @@ private class AcpProcessConnection(
                 started.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
                     lines.forEach { line ->
                         if (line.isNotBlank()) {
-                            appendDiagnostic(line)
-                            Log.d("LocalAcpRuntime", "[${profile.name}] $line")
+                            val safeLine = RuntimeDiagnosticReport.redact(line)
+                            appendDiagnostic(safeLine)
+                            RuntimeDiagnosticUploader.adapterError(profile.id, safeLine)
+                            Log.d("LocalAcpRuntime", "[${profile.name}] $safeLine")
                         }
                     }
                 }

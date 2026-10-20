@@ -5,7 +5,6 @@ import android.os.SystemClock
 import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
 import cn.com.omnimind.bot.agent.AgentRuntimeErrorSupport
 import cn.com.omnimind.bot.agent.runtime.AgentRuntimeManager
-import cn.com.omnimind.baselib.util.OmniLog
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -91,9 +90,7 @@ class AgentRuntimeChannel {
                 val detail = AgentRuntimeErrorSupport.safeDiagnosticMessage(error)
                 val failureKind = AgentRuntimeErrorSupport.failureKind(error)
                 if (error !is kotlinx.coroutines.CancellationException) {
-                    // Keep caught bridge failures visible in exported runtime
-                    // logs without persisting request arguments or error bodies.
-                    OmniLog.e("[AgentRuntimeChannel]", "${call.method} failed (${error.javaClass.simpleName}; ${failureKind ?: "unclassified"})")
+                    RuntimeDiagnosticUploader.failure("AgentRuntimeChannel", call.method, error)
                 }
                 result.error(
                     "AGENT_RUNTIME_CALL_FAILED",

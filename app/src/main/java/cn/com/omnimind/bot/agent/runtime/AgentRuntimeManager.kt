@@ -2086,7 +2086,7 @@ class AgentRuntimeManager private constructor(
             providerModels
         }
         val harnessAdapter = AcpHarnessAdapters.forProfile(profile)
-        harnessAdapter.modelCatalogPatchAsset?.let { asset ->
+        listOfNotNull(harnessAdapter.modelCatalogPatchAsset, harnessAdapter.diagnosticPatchAsset).forEach { asset ->
             modelCatalogPatchMutex.withLock {
                 val patchKey = "${TerminalDistribution.selected().id}:$asset"
                 if (patchKey !in patchedModelCatalogs) {

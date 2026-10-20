@@ -142,11 +142,32 @@ internal object RuntimeDiagnosticUploader {
     /** Only fixed checkpoint names, method names and elapsed time; never arguments. */
     fun checkpoint(owner: String, method: String, stage: String, elapsedMs: Long = 0) {
         synchronized(lock) { if (session == null) return }
-        val safeMethod = method.takeIf { it.matches(Regex("[A-Za-z][A-Za-z0-9_]{0,79}")) } ?: "unknown"
+        val safeMethod = RuntimeDiagnosticFailure.method(method)
         scope.launch {
             RuntimeLogStore.append(RuntimeLogEntry(
                 level = "INFO", tag = owner,
                 message = "$safeMethod $stage elapsedMs=$elapsedMs",
+            ))
+        }
+    }
+
+    fun failure(owner: String, method: String, error: Throwable, context: String = "") {
+        if (error is CancellationException) return
+        val entry = RuntimeDiagnosticFailure.entry(owner, method, error, context)
+        scope.launch { RuntimeLogStore.append(entry) }
+    }
+
+    fun adapterError(profileId: String, line: String) {
+        synchronized(lock) { if (session == null) return }
+        // The compatibility hook emits error details only, before the SDK
+        // replaces an untyped error with "Internal error". No stdout traffic.
+        if (!line.startsWith("[OMNIBOT_ACP_ERROR]")) return
+        val detail = RuntimeDiagnosticReport.redact(line).take(8_192)
+        scope.launch {
+            RuntimeLogStore.append(RuntimeLogEntry(
+                level = "ERROR", tag = "AcpAdapter",
+                message = "adapter request failed profile=${RuntimeDiagnosticFailure.method(profileId)}",
+                stackTrace = detail,
             ))
         }
     }
