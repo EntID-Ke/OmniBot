@@ -110,6 +110,7 @@ class PluginPlatformChannel {
                 if (error is NotImplementedError) {
                     result.notImplemented()
                 } else {
+                    RuntimeDiagnosticUploader.failure("PluginPlatform", call.method, error)
                     result.error(
                         "PLUGIN_PLATFORM_CALL_FAILED",
                         error.message ?: error.javaClass.simpleName,
