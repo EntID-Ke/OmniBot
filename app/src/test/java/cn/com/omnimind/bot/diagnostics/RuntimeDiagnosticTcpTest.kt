@@ -11,8 +11,9 @@ import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
-import javax.net.ssl.SSLServerSocket
+import java.net.ServerSocket
 import javax.net.ssl.SSLSocket
+import javax.net.ssl.ExtendedSSLSession
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -33,10 +34,19 @@ class RuntimeDiagnosticTcpTest {
             val context = SSLContext.getInstance("TLS").apply { init(km.keyManagers, null, null) }
             val certificate = keys.getCertificate("fixture") as X509Certificate
             val pin = MessageDigest.getInstance("SHA-256").digest(certificate.encoded).joinToString("") { "%02x".format(it) }
-            (context.serverSocketFactory.createServerSocket(0) as SSLServerSocket).use { server ->
+            ServerSocket(0).use { server ->
                 server.soTimeout = 5000
+                fun acceptTls(): SSLSocket {
+                    val raw = server.accept().apply { soTimeout = 5000 }
+                    val prefix = ByteArray(4).also { DataInputStream(raw.inputStream).readFully(it) }
+                    assertEquals("OBD1", String(prefix))
+                    return (context.socketFactory.createSocket(raw, raw.inetAddress.hostAddress, raw.port, true) as SSLSocket).apply {
+                        useClientMode = false
+                        soTimeout = 5000
+                    }
+                }
                 val received = executor.submit<String> {
-                    (server.accept() as SSLSocket).use { socket ->
+                    acceptTls().use { socket ->
                         socket.soTimeout = 5000
                         val input = DataInputStream(socket.inputStream)
                         val magic = ByteArray(4).also(input::readFully)
@@ -44,6 +54,7 @@ class RuntimeDiagnosticTcpTest {
                         val code = ByteArray(input.readUnsignedShort()).also(input::readFully)
                         assertEquals("a".repeat(43), String(code))
                         val body = ByteArray(input.readInt()).also(input::readFully)
+                        assertTrue((socket.session as ExtendedSSLSession).requestedServerNames.isEmpty())
                         socket.outputStream.write(0)
                         String(body)
                     }
@@ -52,7 +63,7 @@ class RuntimeDiagnosticTcpTest {
                 RuntimeDiagnosticTcp.socket(target).use { RuntimeDiagnosticTcp.send(it, target, "a".repeat(43), "{\"fixture\":true}") }
                 assertEquals("{\"fixture\":true}", received.get(5, TimeUnit.SECONDS))
                 val rejected = executor.submit<Boolean> {
-                    (server.accept() as SSLSocket).use { socket ->
+                    acceptTls().use { socket ->
                         socket.soTimeout = 5000
                         try { socket.startHandshake(); socket.inputStream.read() == -1 } catch (_: SSLException) { true }
                     }

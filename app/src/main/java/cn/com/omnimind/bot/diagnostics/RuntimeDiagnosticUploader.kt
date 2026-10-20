@@ -21,7 +21,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLSocket
+import java.net.Socket
 
 /** User-started, twenty-minute, outbound diagnostics. No account or MCP access. */
 internal object RuntimeDiagnosticUploader {
@@ -38,7 +38,7 @@ internal object RuntimeDiagnosticUploader {
         val deadline = SystemClock.elapsedRealtime() + DURATION_MS
         var job: Job? = null
         var call: Call? = null
-        var socket: SSLSocket? = null
+        var socket: Socket? = null
         var lastSentAt: Long? = null
         var sentCount = 0
         var error: String? = null

@@ -60,6 +60,16 @@ def make_tcp_server(bind, port, code, output, cert, key, lifetime=3600):
         def handle(self):
             self.request.settimeout(10)
             try:
+                # This is a dedicated log protocol, not an HTTPS listener. Never
+                # answer unrelated HTTP/TLS probes or accept plaintext reports.
+                prefix = bytearray()
+                while len(prefix) < 4:
+                    part = self.request.recv(4 - len(prefix))
+                    if not part:
+                        return
+                    prefix.extend(part)
+                if prefix != b"OBD1":
+                    return
                 with context.wrap_socket(self.request, server_side=True) as connection:
                     if time.monotonic() >= deadline:
                         connection.sendall(b"\x03")

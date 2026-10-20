@@ -125,6 +125,7 @@ class TcpReceiverTest(unittest.TestCase):
     def send(self, body, code=None, size=None, magic=b"OBD1"):
         context = ssl.create_default_context(cafile=str(self.cert))
         with socket.create_connection(self.server.server_address, timeout=5) as raw:
+            raw.sendall(b"OBD1")
             with context.wrap_socket(raw, server_hostname="diagnostic-fixture") as connection:
                 access = (code or self.code).encode()
                 connection.sendall(magic + struct.pack("!H", len(access)) + access + struct.pack("!I", size or len(body)) + body)
@@ -146,6 +147,12 @@ class TcpReceiverTest(unittest.TestCase):
 
     def test_plaintext_and_expired_session_cannot_write(self):
         with socket.create_connection(self.server.server_address, timeout=5) as connection:
+            connection.sendall(b"OPTIONS * HTTP/1.1\r\n\r\n")
+            try:
+                self.assertEqual(b"", connection.recv(32))
+            except ConnectionResetError:
+                pass
+        with socket.create_connection(self.server.server_address, timeout=5) as connection:
             connection.sendall(b"OBD1plaintext-is-rejected")
             try:
                 self.assertEqual(b"", connection.recv(32))
@@ -159,6 +166,7 @@ class TcpReceiverTest(unittest.TestCase):
         self.worker.start()
         context = ssl.create_default_context(cafile=str(self.cert))
         with socket.create_connection(self.server.server_address, timeout=5) as raw:
+            raw.sendall(b"OBD1")
             with context.wrap_socket(raw, server_hostname="diagnostic-fixture") as connection:
                 self.assertEqual(b"\x03", connection.recv(1))
         self.assertFalse((Path(self.temp.name) / "latest.json").exists())

@@ -7,6 +7,7 @@ import java.io.DataOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.URI
+import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -65,30 +66,37 @@ internal object RuntimeDiagnosticTcp {
         }
     }
 
-    fun socket(target: RuntimeDiagnosticTarget): SSLSocket {
-        val context = SSLContext.getInstance("TLS")
-        context.init(null, arrayOf(trustManager(requireNotNull(target.certificateSha256))), null)
-        return (context.socketFactory.createSocket() as SSLSocket).apply {
-            enabledProtocols = supportedProtocols.filter { it == "TLSv1.3" || it == "TLSv1.2" }.toTypedArray()
-            soTimeout = 10_000
-        }
+    fun socket(target: RuntimeDiagnosticTarget): Socket {
+        requireNotNull(target.certificateSha256)
+        return Socket().apply { soTimeout = 10_000 }
     }
 
-    fun send(socket: SSLSocket, target: RuntimeDiagnosticTarget, code: String, body: String) {
+    fun send(socket: Socket, target: RuntimeDiagnosticTarget, code: String, body: String) {
         val payload = body.toByteArray(Charsets.UTF_8)
         require(payload.size in 1..MAX_BYTES)
         require(code.matches(Regex("[A-Za-z0-9_-]{32,128}")))
+        val context = SSLContext.getInstance("TLS")
+        context.init(null, arrayOf(trustManager(requireNotNull(target.certificateSha256))), null)
         socket.connect(InetSocketAddress(target.host, target.port), 10_000)
-        socket.startHandshake() // No diagnostic code or report is sent until the pin is verified.
-        val output = DataOutputStream(socket.outputStream)
-        output.writeBytes("OBD1")
-        output.writeShort(code.length)
-        output.write(code.toByteArray(Charsets.US_ASCII))
-        output.writeInt(payload.size)
-        output.write(payload)
-        output.flush()
-        if (DataInputStream(socket.inputStream).readUnsignedByte() != 0) {
-            throw IOException("Diagnostic report rejected")
+        // Public protocol identifier only. Credentials and reports always follow verified TLS.
+        socket.outputStream.write("OBD1".toByteArray(Charsets.US_ASCII))
+        socket.outputStream.flush()
+        (context.socketFactory.createSocket(socket, target.host, target.port, true) as SSLSocket).use { tls ->
+            // This receiver is identified by its pin, not a virtual website name.
+            tls.sslParameters = tls.sslParameters.apply { serverNames = emptyList() }
+            tls.enabledProtocols = tls.supportedProtocols.filter { it == "TLSv1.3" || it == "TLSv1.2" }.toTypedArray()
+            tls.soTimeout = 10_000
+            tls.startHandshake() // No diagnostic code or report is sent until the pin is verified.
+            val output = DataOutputStream(tls.outputStream)
+            output.writeBytes("OBD1")
+            output.writeShort(code.length)
+            output.write(code.toByteArray(Charsets.US_ASCII))
+            output.writeInt(payload.size)
+            output.write(payload)
+            output.flush()
+            if (DataInputStream(tls.inputStream).readUnsignedByte() != 0) {
+                throw IOException("Diagnostic report rejected")
+            }
         }
     }
 }
