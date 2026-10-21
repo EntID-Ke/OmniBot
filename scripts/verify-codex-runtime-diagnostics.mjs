@@ -22,10 +22,19 @@ try {
     if (previous) assert.equal(source, previous, 'Patch must be idempotent');
     previous = source;
   }
+  // Simulate an installed code21 helper, then upgrade it in place. The v2
+  // section is the only difference from the shipped v1 patch.
+  const v1Source = previous.replace(/    \/\/ OOB ACP missing rollout normalization v2\n[\s\S]*?(?=    throw error;)/, '');
+  assert.notEqual(v1Source, previous);
+  await writeFile(resolve(root, 'dist/index.js'), v1Source);
+  assert.equal(spawnSync(process.execPath, [patch, root]).status, 0);
+  assert.equal(await readFile(resolve(root, 'dist/index.js'), 'utf8'), previous,
+    'Existing v1 installations must receive the same fix as fresh installations');
   const helper = previous.split('// OOB ACP error diagnostics v1\n')[1]?.split('\nfunction startAcpServer() {')[0];
   assert(helper);
   const logs = [];
-  const observe = new Function('console', helper + '\nreturn omnibotObserveAcpFailure;')({error: line => logs.push(line)});
+  class RequestError extends Error { constructor(code, message) { super(message); this.code = code; } }
+  const observe = new Function('console', 'RequestError', helper + '\nreturn omnibotObserveAcpFailure;')({error: line => logs.push(line)}, RequestError);
   assert.equal(await observe('session/new', async () => 'original result'), 'original result');
   assert.equal(logs.length, 0, 'Successful operations must not dump traffic');
   const original = Object.assign(new Error('failed to reload config access_token=fixture-secret'), {
@@ -45,8 +54,16 @@ try {
   for (const method of ['initialize', 'session/new', 'session/load', 'session/resume', 'session/set_config_option', 'session/prompt']) {
     assert(previous.includes(`omnibotObserveAcpFailure(${JSON.stringify(method)}, () => getAgent().`), `Missing handler ${method}`);
   }
+  const missing = Object.assign(new Error('no rollout found for thread id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'), {code:-32600});
+  for (const method of ['session/load', 'session/resume']) {
+    await assert.rejects(observe(method, () => { throw missing; }), error =>
+      error instanceof RequestError && error.code === -32600 && error.message === missing.message);
+  }
+  await assert.rejects(observe('session/prompt', () => { throw missing; }), error => error === missing);
+  const unrelated = Object.assign(new Error('provider authentication failed'), {code:-32600});
+  await assert.rejects(observe('session/load', () => { throw unrelated; }), error => error === unrelated);
   // A broken diagnostic output must still preserve the original failure.
-  const broken = new Function('console', helper + '\nreturn omnibotObserveAcpFailure;')({error: () => { throw Error('fixture log unavailable'); }});
+  const broken = new Function('console', 'RequestError', helper + '\nreturn omnibotObserveAcpFailure;')({error: () => { throw Error('fixture log unavailable'); }}, RequestError);
   await assert.rejects(broken('session/new', () => { throw original; }), error => error === original);
   // Exercise the real bundled SDK: it hides the original untyped upstream
   // exception on the ACP wire, while our stderr record retains its cause.
@@ -55,11 +72,15 @@ try {
 const readline = require('node:readline');
 readline.createInterface({input:process.stdin}).on('line', line => {
   const m = JSON.parse(line); if (m.id === undefined) return;
-  const error = {code:-32603,message:'fixture_upstream_root_cause access_token=fixture-wire-secret'};
+  const error = m.method === 'thread/resume'
+    ? {code:-32600,message:'no rollout found for thread id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}
+    : {code:-32603,message:'fixture_upstream_root_cause access_token=fixture-wire-secret'};
   if (m.method === 'initialize') process.stderr.write('fixture_runtime_stderr token=fixture-runtime-secret\\n');
-  process.stdout.write(JSON.stringify(m.method === 'initialize'
-    ? {id:m.id,result:{userAgent:'fixture',codexHome:${JSON.stringify(root)}}}
-    : {id:m.id,error})+'\\n');
+  const result = m.method === 'initialize' ? {userAgent:'fixture',codexHome:${JSON.stringify(root)}}
+    : m.method === 'config/read' ? {config:{}}
+    : m.method === 'skills/list' ? {data:[]} : {};
+  process.stdout.write(JSON.stringify(m.method === 'thread/start' || m.method === 'thread/resume'
+    ? {id:m.id,error} : {id:m.id,result})+'\\n');
 });
 `, {mode: 0o700});
   const child = spawn(process.execPath, [resolve(root, 'dist/index.js')], {
@@ -88,6 +109,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
         const response = await request('session/new', {cwd:root,mcpServers:[]});
         assert.equal(response.error?.code, -32603);
         assert.equal(response.error?.message, 'Internal error');
+        const missingResponse = await request('session/load', {sessionId:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',cwd:root,mcpServers:[]});
+        assert.equal(missingResponse.error?.code, -32600, stderr);
+        assert.equal(missingResponse.error?.message, missing.message,
+          'Missing rollout cause must survive the real SDK wire for the existing restore owner');
         // stdout and stderr are separate OS pipes: wait for the error record,
         // never infer their read order from the response arrival time.
         for (let i = 0; i < 30 && !stderr.includes('[OMNIBOT_ACP_ERROR]'); i++) {
@@ -106,7 +131,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   }
   await writeFile(resolve(root, 'package.json'), '{"version":"0.0.0"}');
   assert.notEqual(spawnSync(process.execPath, [patch, root]).status, 0, 'Reject unsupported adapters');
-  console.log('PASS pinned ACP diagnostics: real SDK Internal error retains upstream cause, redaction, no request data, identical failure/result, handlers, idempotence, version guard');
+  console.log('PASS pinned ACP diagnostics: missing rollout survives real SDK wire, fresh/v1 upgrade, unrelated failures unchanged, cause/stderr redaction, no request data, handlers, idempotence, version guard');
 } finally {
   await rm(root, {recursive: true, force: true});
 }

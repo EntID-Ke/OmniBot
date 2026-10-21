@@ -2082,48 +2082,36 @@ internal class LocalAcpRuntime(
                     )
                 )
             }
-            sessions[threadId]?.let {
-                if (args["refreshConfig"] == true &&
-                    requireAgentInfo().capabilities.loadSession) {
-                    check(turnOwnership.activeTurnId(threadId) == null) { "本轮结束后可刷新模型列表" }
-                    val cwd = sessionCwds[threadId] ?: "/workspace"
-                    val refreshed = try {
-                        replaySuppressedThreads.add(threadId)
-                        observeAcpRequest("session/load") {
-                            requireClient().loadSession(
-                                SessionId(threadId), sessionCreationParameters(cwd, args), operationsFactory()
-                            )
-                        }
-                    } finally {
-                        replaySuppressedThreads.remove(threadId)
-                    }
-                    registerSession(refreshed, cwd)
-                    return@withLock sessionPayload(refreshed, bindingRepository.getBindingByThreadId(threadId)?.conversationId)
-                }
+            val capabilities = requireAgentInfo().capabilities
+            val refreshConfig = args["refreshConfig"] == true && capabilities.loadSession
+            val cachedSession = sessions[threadId]
+            if (cachedSession != null && !refreshConfig) {
                 Log.i(
                     TAG,
                     "ACP session/load restored in-memory session=${compactId(threadId)}"
                 )
                 return@withLock sessionPayload(
-                    it,
+                    cachedSession,
                     bindingRepository.getBindingByThreadId(threadId)?.conversationId
                 )
             }
-            val capabilities = requireAgentInfo().capabilities
+            if (refreshConfig) {
+                check(turnOwnership.activeTurnId(threadId) == null) { "本轮结束后可刷新模型列表" }
+            }
+            val previousBinding = bindingRepository.getBindingByThreadId(threadId)
             val cwd = normalizeCwd(
-                args.stringValue("cwd")
-                    ?: bindingRepository.getBindingByThreadId(threadId)?.cwd
+                sessionCwds[threadId] ?: args.stringValue("cwd") ?: previousBinding?.cwd
             )
             val parameters = sessionCreationParameters(cwd, args)
             val restored = try {
                 when {
-                    preferResume && capabilities.sessionCapabilities.resume != null ->
+                    !refreshConfig && preferResume && capabilities.sessionCapabilities.resume != null ->
                         observeAcpRequest("session/resume") {
                             requireClient().resumeSession(SessionId(threadId), parameters, operationsFactory())
                         }
                     capabilities.loadSession -> {
                         replayingThreads.add(threadId)
-                        if (shouldSuppressAcpReplay(threadId)) {
+                        if (refreshConfig || shouldSuppressAcpReplay(threadId)) {
                             replaySuppressedThreads.add(threadId)
                         }
                         try {
@@ -2158,18 +2146,36 @@ internal class LocalAcpRuntime(
                 }
                 registerSession(fresh, cwd)
                 profileStore.bindSession(fresh.sessionId.value, activeAgentId())
-                val conversationId = bindingRepository.ensureBinding(
+                // Catalog refresh may borrow another Conversation's session or
+                // an unbound catalog session. Keep that ownership, regardless
+                // of which page requested the model list.
+                val previousConversationId = if (refreshConfig && cachedSession != null) {
+                    previousBinding?.conversationId
+                } else {
+                    args.longValue("conversationId") ?: previousBinding?.conversationId
+                }
+                val unboundCatalog = catalogSessionId == threadId && previousConversationId == null
+                val conversationId = if (unboundCatalog) null else bindingRepository.ensureBinding(
                     threadId = fresh.sessionId.value,
-                    conversationId = args.longValue("conversationId")
-                        ?: bindingRepository.getBindingByThreadId(threadId)?.conversationId,
+                    conversationId = previousConversationId,
                     cwd = cwd,
                     conversationMode = args.stringValue("conversationMode")
                         ?: AgentSessionBindingRepository.AGENT_MODE_STORAGE_VALUE
                 )
-                profileStore.bindConversation(conversationId, activeAgentId())
-                if (activeAgentId() != AcpAgentProfileStore.XIAOWAN_AGENT_ID) {
+                if (conversationId != null) profileStore.bindConversation(conversationId, activeAgentId())
+                if (conversationId != null && activeAgentId() != AcpAgentProfileStore.XIAOWAN_AGENT_ID) {
                     pendingHandoffConversationIds[fresh.sessionId.value] = conversationId
                 }
+                // Retire the stale cache only after the existing restore owner
+                // has successfully registered and bound its replacement.
+                if (fresh.sessionId.value != threadId) {
+                    sessions.remove(threadId)
+                    sessionCwds.remove(threadId)
+                    sessionPermissionBehaviors.remove(threadId)
+                    pendingHandoffConversationIds.remove(threadId)
+                    profileStore.unbindSession(threadId)
+                }
+                if (catalogSessionId == threadId) catalogSessionId = fresh.sessionId.value
                 return@withLock sessionPayload(fresh, conversationId).plus(
                     mapOf(
                         "sessionRestored" to false,
@@ -2178,6 +2184,9 @@ internal class LocalAcpRuntime(
                 )
             }
             registerSession(restored, cwd)
+            if (cachedSession != null) {
+                return@withLock sessionPayload(restored, previousBinding?.conversationId)
+            }
             Log.i(
                 TAG,
                 "ACP session/load restored persisted session=${compactId(threadId)}"
@@ -2321,8 +2330,9 @@ internal class LocalAcpRuntime(
             val id = session.sessionId.value
             // Reuse the existing session/load owner and replay suppression;
             // refreshing a catalog must not start or replay a prompt.
-            resumeThread(args + mapOf("sessionId" to id, "refreshConfig" to true))
-            session = sessions[id] ?: error("Refreshed ACP session is unavailable")
+            val restored = resumeThread(args + mapOf("sessionId" to id, "refreshConfig" to true))
+            val restoredId = checkNotNull(restored.stringValue("threadId"))
+            session = sessions[restoredId] ?: error("Refreshed ACP session is unavailable")
         }
         val modelOption = sessionConfigOptions(session).firstOrNull {
             it.id.value == "model" || it.category == SessionConfigOptionCategory.MODEL

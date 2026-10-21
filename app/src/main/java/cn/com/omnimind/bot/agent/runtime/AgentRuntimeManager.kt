@@ -4182,6 +4182,7 @@ internal fun npmPackageName(spec: String): String {
 internal fun isRecoverableAgentThreadError(message: String): Boolean {
     val normalized = message.lowercase()
     return normalized.contains("thread not found") ||
+        normalized.contains("no rollout found for thread id ") ||
         normalized.contains("unknown session") ||
         normalized.contains("did not advertise session resume or loadsession") ||
         normalized.contains("session not found") ||

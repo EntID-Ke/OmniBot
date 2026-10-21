@@ -7,6 +7,11 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 if (pkg.version !== '1.10.0') throw Error('Unsupported Codex ACP diagnostic patch version');
 const file = path.join(root, 'dist/index.js');
 let source = fs.readFileSync(file, 'utf8');
+const originalSource = source;
+function replaceOnce(before, after) {
+  if (source.split(before).length !== 2) throw Error('Codex ACP diagnostic patch source mismatch');
+  source = source.replace(before, after);
+}
 const marker = '// OOB ACP error diagnostics v1';
 if (!source.includes(marker)) {
   const helper = String.raw`
@@ -47,10 +52,6 @@ async function omnibotObserveAcpFailure(method, operation, recentStderr = () => 
   }
 }
 `;
-  function replaceOnce(before, after) {
-    if (source.split(before).length !== 2) throw Error('Codex ACP diagnostic patch source mismatch');
-    source = source.replace(before, after);
-  }
   replaceOnce('function startAcpServer() {', helper + '\nfunction startAcpServer() {');
   for (const [method, call] of [
     ['initialize', 'initialize(ctx.params)'],
@@ -63,6 +64,24 @@ async function omnibotObserveAcpFailure(method, operation, recentStderr = () => 
     replaceOnce(`(ctx) => getAgent().${call})`,
       `(ctx) => omnibotObserveAcpFailure(${JSON.stringify(method)}, () => getAgent().${call}, () => getAgent().getRecentStderr()))`);
   }
+}
+// Also upgrade the v1 helper already installed by earlier test APKs. Only
+// normalize the observed missing-rollout error, using the SDK's own JSON-RPC
+// error type. Other errors keep their original identity and behavior.
+if (!source.includes('// OOB ACP missing rollout normalization v2')) {
+  replaceOnce('    throw error;\n  }\n}\n\nfunction startAcpServer() {', String.raw`    // OOB ACP missing rollout normalization v2
+    if ((method === 'session/load' || method === 'session/resume') &&
+        error?.code === -32600 &&
+        /^no rollout found for thread id [0-9a-f-]+$/i.test(error?.message ?? '')) {
+      throw new RequestError(error.code, error.message);
+    }
+    throw error;
+  }
+}
+
+function startAcpServer() {`);
+}
+if (source !== originalSource) {
   const temporary = file + '.omnibot-diagnostic-tmp';
   fs.writeFileSync(temporary, source, {mode: fs.statSync(file).mode});
   fs.renameSync(temporary, file);

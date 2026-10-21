@@ -999,7 +999,10 @@ class AgentRuntimeProtocolPayloadTest {
         assertTrue(isRecoverableAgentThreadError("unknown session: old-session"))
         assertTrue(isRecoverableAgentThreadError("session metadata not found"))
         assertTrue(isRecoverableAgentThreadError("session file missing"))
+        assertTrue(isRecoverableAgentThreadError("no rollout found for thread id fixture-session"))
         assertFalse(isRecoverableAgentThreadError("provider authentication failed"))
+        assertFalse(isRecoverableAgentThreadError("Internal error"))
+        assertFalse(isRecoverableAgentThreadError("timeout waiting for child process to exit"))
     }
 
     @Test
