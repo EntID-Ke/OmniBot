@@ -99,6 +99,54 @@ void main() {
   });
 
   testWidgets(
+    'all runtime models remain selectable without a fixed catalog size',
+    (tester) async {
+      final ids = [
+        for (var i = 0; i < 15; i++) 'dynamic-$i',
+        'gpt-6-luna',
+        'gpt-6.1-sol',
+      ];
+      var selected = ids.first;
+      final writes = <Map>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'model/list')
+          return {
+            'models': [
+              for (final id in ids) {'id': id, 'displayName': id},
+            ],
+            'currentModelId': selected,
+          };
+        if (call.method == 'agent/config/write') {
+          writes.add(call.arguments as Map);
+          selected = call.arguments['model'] as String;
+          return {'model': selected};
+        }
+        return {};
+      });
+      await pump(tester);
+      await tester.tap(find.text('Refresh official model catalog'));
+      await tester.pumpAndSettle();
+      final field = tester.widget<DropdownButton<String>>(
+        find.descendant(
+          of: find.byKey(ValueKey('codex-subscription-model-$selected')),
+          matching: find.byType(DropdownButton<String>),
+        ),
+      );
+      expect(field.items!.map((item) => item.value), ids);
+      await tester.tap(find.text(selected));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('gpt-6.1-sol'),
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.tap(find.text('gpt-6.1-sol').last);
+      await tester.pumpAndSettle();
+      expect(writes.single['model'], 'gpt-6.1-sol');
+    },
+  );
+
+  testWidgets(
     'device code is shown and cancellation uses the owning ACP request',
     (tester) async {
       final login = Completer<Map<String, dynamic>>();

@@ -99,7 +99,8 @@ internal object AcpHarnessAdapters {
                 }
             } else setOf("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
         override fun environmentOverridesAfterShell(environment: Map<String, String>): Map<String, String> =
-            environment.filterKeys { it == "CODEX_HOME" || it == "NO_BROWSER" || it == "OMNIBOT_CODEX_INCLUDE_HIDDEN_MODELS" }
+            environment.filterKeys { it == "CODEX_HOME" || it == "NO_BROWSER" } +
+                ("CODEX_PATH" to CODEX_MANAGED_COMMAND)
         override fun validateAuthenticationMethod(methodId: String, environment: Map<String, String>) {
             val subscription = environment["CODEX_HOME"] == CODEX_SUBSCRIPTION_HOME
             require(subscription == (methodId == "chat-gpt" || methodId == "chat-gpt-device-code")) {

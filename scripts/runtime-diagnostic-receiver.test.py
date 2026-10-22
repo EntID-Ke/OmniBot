@@ -1,4 +1,5 @@
 import importlib.util
+import http.client
 import json
 import hashlib
 import re
@@ -22,6 +23,24 @@ spec.loader.exec_module(receiver)
 
 
 class ReceiverTest(unittest.TestCase):
+    def test_incremental_history_survives_replay_restart_and_old_batch_limit(self):
+        output = Path(self.temp.name)
+        def send_batch(ids, stream="fixture"):
+            raw = json.dumps({"schemaVersion": 1, "sessionId": stream, "device": {},
+                              "logs": [{"id": str(i), "message": str(i)} for i in ids]}).encode()
+            self.assertEqual(204, self.send(raw))
+        send_batch(range(100))
+        send_batch(range(100))
+        first = receiver.read_new_logs(output)
+        self.assertEqual(100, len(first))
+        cursor = first[-1]["sequence"]
+        send_batch(range(90, 190))
+        self.assertEqual(90, len(receiver.read_new_logs(output, cursor)))
+        # A fresh SQLite connection and a second device retain independent identities.
+        send_batch(range(2), "other-device")
+        self.assertEqual(192, len(receiver.read_new_logs(output)))
+        self.assertEqual([], receiver.read_new_logs(output, receiver.read_new_logs(output)[-1]["sequence"]))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.code = "fixture-diagnostic-code-32-characters"
@@ -65,7 +84,17 @@ class ReceiverTest(unittest.TestCase):
     def test_invalid_and_oversize_reports_are_rejected(self):
         self.assertEqual(400, self.send(b"not json"))
         self.assertEqual(400, self.send(b"{}"))
-        self.assertEqual(413, self.send(b"x" * (receiver.MAX_BYTES + 1)))
+        # The server rejects the declared length before reading a body. Sending
+        # a megabyte concurrently races its deliberate connection close.
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            connection.putrequest("POST", "/v1/runtime-logs")
+            connection.putheader("Authorization", "Bearer " + self.code)
+            connection.putheader("Content-Length", str(receiver.MAX_BYTES + 1))
+            connection.endheaders()
+            self.assertEqual(413, connection.getresponse().status)
+        finally:
+            connection.close()
 
     def test_private_connection_page_delivers_only_reviewed_apk_and_pairing(self):
         self.server.shutdown()

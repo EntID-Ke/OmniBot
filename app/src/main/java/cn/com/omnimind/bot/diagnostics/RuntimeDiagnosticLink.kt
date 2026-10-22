@@ -4,7 +4,7 @@ import com.google.gson.JsonParser
 import java.net.URI
 import java.util.Base64
 
-/** A private connection link fills the existing opt-in panel, never starts collection. */
+/** Validates a private connection link. The Activity imports it into the uploader. */
 internal object RuntimeDiagnosticLink {
     private var pending: Map<String, String>? = null
     private var receivedAt = 0L

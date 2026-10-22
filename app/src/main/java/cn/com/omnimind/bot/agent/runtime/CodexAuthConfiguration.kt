@@ -16,6 +16,9 @@ internal enum class CodexAuthMode(val value: String) {
 internal const val CODEX_SUBSCRIPTION_HOME = "/root/.codex-chatgpt"
 internal const val CODEX_SUBSCRIPTION_CONFIG = "$CODEX_SUBSCRIPTION_HOME/config.toml"
 internal const val CODEX_SUBSCRIPTION_AUTH = "$CODEX_SUBSCRIPTION_HOME/auth.json"
+// codex-acp also installs an older transitive CLI. Both authentication and ACP
+// must use the same managed executable as the terminal's `codex /model`.
+internal const val CODEX_MANAGED_COMMAND = "/root/.npm-global/bin/codex"
 
 // Clear these after the login shell has loaded its profile, immediately before
 // exec. Empty environment values alone do not remove inherited credentials.

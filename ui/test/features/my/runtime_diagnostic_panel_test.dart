@@ -12,33 +12,100 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
-  testWidgets('private link fills connection without automatic collection or typing', (tester) async {
+  testWidgets('pending imported link permits retry without typing', (
+    tester,
+  ) async {
     final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
       if (call.method == 'consumeRuntimeDiagnosticLink') {
-        return {'endpoint': 'https://receiver.example/v1/runtime-logs', 'code': 'a' * 43};
+        return {
+          'endpoint': 'https://receiver.example/v1/runtime-logs',
+          'code': 'a' * 43,
+        };
       }
-      return {'active': call.method == 'startRuntimeDiagnostics', 'sentCount': 0};
+      return {
+        'active': call.method == 'startRuntimeDiagnostics',
+        'sentCount': 0,
+      };
     });
-    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SingleChildScrollView(child: RuntimeDiagnosticPanel()))));
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(child: RuntimeDiagnosticPanel()),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
     expect(find.text('连接已就绪：receiver.example'), findsOneWidget);
     expect(find.byType(TextField), findsNothing);
-    expect(calls.where((call) => call.method == 'startRuntimeDiagnostics'), isEmpty);
+    expect(
+      calls.where((call) => call.method == 'startRuntimeDiagnostics'),
+      isEmpty,
+    );
     await tester.tap(find.text('开始采集'));
     await tester.pumpAndSettle();
-    expect(calls.singleWhere((call) => call.method == 'startRuntimeDiagnostics').arguments, {
-      'endpoint': 'https://receiver.example/v1/runtime-logs', 'code': 'a' * 43,
-    });
+    expect(
+      calls
+          .singleWhere((call) => call.method == 'startRuntimeDiagnostics')
+          .arguments,
+      {
+        'endpoint': 'https://receiver.example/v1/runtime-logs',
+        'code': 'a' * 43,
+      },
+    );
     await tester.tap(find.text('停止采集'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('开始采集'));
     await tester.pumpAndSettle();
-    expect(calls.where((call) => call.method == 'startRuntimeDiagnostics').length, 2);
-    expect(calls.lastWhere((call) => call.method == 'startRuntimeDiagnostics').arguments['code'], 'a' * 43);
+    expect(
+      calls.where((call) => call.method == 'startRuntimeDiagnostics').length,
+      2,
+    );
+    expect(
+      calls
+          .lastWhere((call) => call.method == 'startRuntimeDiagnostics')
+          .arguments['code'],
+      'a' * 43,
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets(
+    'restored automatic upload shows queue state without pressing start',
+    (tester) async {
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        if (call.method == 'consumeRuntimeDiagnosticLink') return null;
+        return {
+          'active': true,
+          'automatic': true,
+          'sentCount': 12,
+          'pendingLogs': 230,
+          'droppedLogs': 0,
+        };
+      });
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(child: RuntimeDiagnosticPanel()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('自动上报中 · 已发送 12 批'), findsOneWidget);
+      await tester.tap(find.text('联网诊断'));
+      await tester.pumpAndSettle();
+      expect(find.text('待发送 230 条 · 丢弃 0 条'), findsOneWidget);
+      expect(
+        calls.where((call) => call.method == 'startRuntimeDiagnostics'),
+        isEmpty,
+      );
+      expect(find.textContaining('重开应用自动恢复'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets(
     'starts explicit capture and leaves it active when navigating away',

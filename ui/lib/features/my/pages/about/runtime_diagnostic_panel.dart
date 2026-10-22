@@ -111,18 +111,18 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
       initiallyExpanded: _paired,
       tilePadding: EdgeInsets.zero,
       title: const Text('联网诊断'),
-      subtitle: Text(_active ? '采集中 · 已发送 $sent 次' : '临时发送真机运行日志'),
+      subtitle: Text(_active ? '自动上报中 · 已发送 $sent 批' : '连接后自动发送应用运行日志'),
       children: [
         const Text(
-          '开始后，每 10 秒向指定接收端发送经过凭证过滤的应用错误、'
-          '崩溃、Agent／插件读取耗时及设备版本信息，20 分钟后自动停止。'
-          '可离开此页复现问题，返回此处停止。应用进程退出后不会恢复采集。',
+          '连接一次后自动上报本应用全部级别的运行日志、崩溃和 Agent／插件诊断，'
+          '重开应用自动恢复。凭证先过滤；断网暂存，连接恢复后续传，接收端保留新增记录。'
+          '离线队列最多 32 MiB／16384 条，超出时显示丢弃数。可在此停止。',
         ),
         const SizedBox(height: 12),
         if (!_active && _paired) ...[
           const SizedBox(height: 8),
           Text('连接已就绪：${Uri.tryParse(_endpoint.text)?.host ?? ''}'),
-          const Text('点击“开始采集”即可连接，无需填写地址或诊断码。'),
+          const Text('连接链接会自动启用上报；也可点击下方按钮重试。'),
         ] else if (!_active) ...[
           TextField(
             controller: _endpoint,
@@ -147,10 +147,14 @@ class _RuntimeDiagnosticPanelState extends State<RuntimeDiagnosticPanel> {
         ] else ...[
           const SizedBox(height: 8),
           Text('接收端：${_state['receiverHost'] ?? ''}'),
-          Text('剩余 ${_state['remainingSeconds'] ?? 0} 秒'),
-          if (status != null) Text('发送失败：$status；稍后自动重试'),
+          Text(
+            '待发送 ${_state['pendingLogs'] ?? 0} 条 · 丢弃 ${_state['droppedLogs'] ?? 0} 条',
+          ),
+          if (_state['captureError'] != null)
+            Text('采集异常：${_state['captureError']}；稍后自动重试'),
           if (sent == 0 && status == null) const Text('正在连接接收端…'),
         ],
+        if (status != null) Text('诊断异常：$status；采集中会自动重试，可重新导入连接'),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),

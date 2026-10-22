@@ -19,6 +19,7 @@ import cn.com.omnimind.bot.agent.WorkspaceMemoryRollupScheduler
 import cn.com.omnimind.bot.agent.WorkspaceScheduledTaskScheduler
 import cn.com.omnimind.bot.activity.StartupThemeResolver
 import cn.com.omnimind.bot.cleanup.LegacyLocalModelDataCleanup
+import cn.com.omnimind.bot.diagnostics.RuntimeDiagnosticUploader
 import cn.com.omnimind.bot.mcp.McpServerManager
 import cn.com.omnimind.bot.plugin.OmniPluginHost
 import cn.com.omnimind.bot.plugin.official.OfficialOmniPluginProviders
@@ -87,6 +88,7 @@ class App : BaseApplication() {
         MMKV.initialize(this)
         CredentialEndpointSecurity.configureDebugLoopback(BuildConfig.DEBUG)
         AppSecretStore.initialize(this)
+        RuntimeDiagnosticUploader.initialize(this)
         ModelProviderConfigStore.initialize(this)
         DebugOmniMindProviderBootstrap.install(this)
         OfficialOmniPluginProviders.register()

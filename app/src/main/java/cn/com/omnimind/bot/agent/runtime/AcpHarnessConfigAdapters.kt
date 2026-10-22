@@ -139,8 +139,8 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
         if (input.codexAuthMode == CodexAuthMode.CHATGPT) {
             return AgentProviderMapping(environment = mapOf(
                 "CODEX_HOME" to CODEX_SUBSCRIPTION_HOME,
+                "CODEX_PATH" to CODEX_MANAGED_COMMAND,
                 "NO_BROWSER" to "1",
-                "OMNIBOT_CODEX_INCLUDE_HIDDEN_MODELS" to "1",
             ))
         }
         val provider = input.provider
@@ -149,10 +149,11 @@ internal object CodexConfigAdapter : AgentConfigAdapter {
         }
         val headerBindings = provider?.let { buildAcpHeaderBindings(it.customHeaders) }
         val environment = if (provider == null) {
-            mapOf("CODEX_HOME" to AgentRuntimeDefaults.CODEX_HOME)
+            mapOf("CODEX_HOME" to AgentRuntimeDefaults.CODEX_HOME, "CODEX_PATH" to CODEX_MANAGED_COMMAND)
         } else {
             mapOf(
                 "CODEX_HOME" to AgentRuntimeDefaults.CODEX_HOME,
+                "CODEX_PATH" to CODEX_MANAGED_COMMAND,
                 "OPENAI_BASE_URL" to normalizeCodexBaseUrl(provider.baseUrl),
                 "OPENAI_API_KEY" to provider.apiKey
             ) + headerBindings?.environment.orEmpty()

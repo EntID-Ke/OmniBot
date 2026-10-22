@@ -1,6 +1,11 @@
 package cn.com.omnimind.bot.diagnostics
 
+import android.content.Context
 import android.os.Build
+import android.os.Process
+import cn.com.omnimind.baselib.util.AppSecretStore
+import com.google.gson.Gson
+import java.io.File
 import android.os.SystemClock
 import cn.com.omnimind.baselib.util.RuntimeLogEntry
 import cn.com.omnimind.baselib.util.RuntimeLogStore
@@ -23,9 +28,16 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.net.Socket
 
-/** User-started, twenty-minute, outbound diagnostics. No account or MCP access. */
+/** A paired receiver is restored on app startup. Uploads only app-UID logs. */
 internal object RuntimeDiagnosticUploader {
-    private const val DURATION_MS = 20 * 60 * 1000L
+    private const val CONNECTION_KEY = "runtime_diagnostics.connection.v2"
+    private val gson = Gson()
+    private data class Connection(val endpoint: String, val code: String, val streamId: String, val enabled: Boolean)
+    private var directory: File? = null
+    private var outbox: RuntimeDiagnosticOutbox? = null
+    private var collector: Job? = null
+    private var logcat: java.lang.Process? = null
+    private var captureError: String? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient.Builder()
         .followRedirects(false).followSslRedirects(false)
@@ -33,9 +45,7 @@ internal object RuntimeDiagnosticUploader {
         .retryOnConnectionFailure(false)
         .build()
     private val lock = Any()
-    private class Session(val endpoint: RuntimeDiagnosticTarget, val code: String) {
-        val id = UUID.randomUUID().toString()
-        val deadline = SystemClock.elapsedRealtime() + DURATION_MS
+    private class Session(val endpoint: RuntimeDiagnosticTarget, val code: String, val id: String) {
         var job: Job? = null
         var call: Call? = null
         var socket: Socket? = null
@@ -47,61 +57,148 @@ internal object RuntimeDiagnosticUploader {
 
     internal fun validateEndpoint(value: String): RuntimeDiagnosticTarget = RuntimeDiagnosticTarget.parse(value)
 
+    fun initialize(context: Context) {
+        synchronized(lock) {
+            if (directory != null) return
+            directory = File(context.noBackupFilesDir, "runtime-diagnostic-outbox")
+        }
+        RuntimeLogStore.observe("runtime-diagnostics") { entry ->
+            scope.launch {
+                synchronized(lock) {
+                    if (session != null) runCatching { outbox?.append(entry) }
+                        .onFailure { captureError = it.javaClass.simpleName }
+                }
+            }
+        }
+        scope.launch {
+            synchronized(lock) {
+                val saved = savedConnection()
+                if (session == null && saved?.enabled == true) {
+                    runCatching { beginLocked(saved) }.onFailure { captureError = it.javaClass.simpleName }
+                }
+            }
+        }
+    }
+
+    fun importLink(value: String) {
+        scope.launch {
+            runCatching { start(value, "") }
+                .onFailure { synchronized(lock) { captureError = it.javaClass.simpleName } }
+        }
+    }
+
+    private fun savedConnection(): Connection? = runCatching {
+        AppSecretStore.read(CONNECTION_KEY)?.let { gson.fromJson(it, Connection::class.java) }
+    }.getOrNull()
+
     fun start(endpoint: String, code: String): Map<String, Any?> {
+        if (endpoint.isBlank() && code.isBlank()) synchronized(lock) {
+            val saved = savedConnection()?.copy(enabled = true)
+            if (saved != null) {
+                check(AppSecretStore.write(CONNECTION_KEY, gson.toJson(saved))) { "无法保存诊断连接" }
+                beginLocked(saved)
+                return stateLocked()
+            }
+        }
         val link = if (endpoint.trim().startsWith("omnibotdiagnostics:")) {
             requireNotNull(RuntimeDiagnosticLink.parse(endpoint.trim())) { "诊断链接无效，请重新复制完整链接" }
         } else null
-        val url = validateEndpoint(link?.get("endpoint") ?: endpoint)
+        val endpointValue = link?.get("endpoint") ?: endpoint
+        validateEndpoint(endpointValue)
         val accessCode = link?.get("code") ?: code
         require(accessCode.matches(Regex("[A-Za-z0-9_-]{32,128}"))) { "诊断码须为 32–128 位字母、数字、下划线或连字符" }
         synchronized(lock) {
-            stopLocked()
-            val current = Session(url, accessCode)
-            session = current
-            current.job = scope.launch {
-                while (isActive && SystemClock.elapsedRealtime() < current.deadline) {
-                    try {
-                        val body = RuntimeDiagnosticReport.encode(current.id, deviceInfo(), RuntimeLogStore.listRecent(100))
-                        val https = current.endpoint.https
-                        val error = if (https != null) {
-                            val call = createUploadCall(https, current.code, body)
+            check(directory != null) { "诊断存储尚未初始化" }
+            val saved = Connection(endpointValue, accessCode, savedConnection()?.streamId ?: UUID.randomUUID().toString(), true)
+            check(AppSecretStore.write(CONNECTION_KEY, gson.toJson(saved))) { "无法加密保存诊断连接" }
+            beginLocked(saved)
+            return stateLocked()
+        }
+    }
+
+    private fun beginLocked(saved: Connection) {
+        val target = validateEndpoint(saved.endpoint)
+        require(saved.code.matches(Regex("[A-Za-z0-9_-]{32,128}")))
+        stopLocked()
+        val queue = outbox ?: RuntimeDiagnosticOutbox(checkNotNull(directory)).also { outbox = it }
+        val current = Session(target, saved.code, saved.streamId)
+        session = current
+        captureError = null
+        // Persisted error checkpoints include crashes from the previous process.
+        RuntimeLogStore.listRecent(200).asReversed().forEach(queue::append)
+        collector = scope.launch {
+            while (isActive) {
+                var process: java.lang.Process? = null
+                try {
+                    val started = ProcessBuilder("logcat", "-b", "main", "-b", "crash",
+                        "--uid=${Process.myUid()}", "-v", "threadtime,epoch,usec", "*:V")
+                        .redirectErrorStream(true).start()
+                    process = started
+                    synchronized(lock) {
+                        if (session !== current) return@launch
+                        logcat = started
+                        captureError = null
+                    }
+                    started.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            if (!isActive) return@forEach
+                            RuntimeDiagnosticLogcat.parse(line)?.let(queue::append)
+                        }
+                    }
+                    if (isActive) synchronized(lock) { captureError = "logcat exited (${started.waitFor()})" }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    synchronized(lock) { captureError = error.javaClass.simpleName }
+                } finally {
+                    process?.destroy()
+                }
+                delay(5_000)
+            }
+        }
+        current.job = scope.launch {
+            while (isActive) {
+                try {
+                    val batch = queue.pending()
+                    val report = RuntimeDiagnosticReport.batch(current.id, deviceInfo(), batch, queue.dropped)
+                    val https = current.endpoint.https
+                    val error = if (https != null) {
+                        val call = createUploadCall(https, current.code, report.json)
+                        synchronized(lock) {
+                            if (session !== current) return@launch
+                            current.call = call
+                        }
+                        call.execute().use { response ->
+                            if (response.isSuccessful) null else "HTTP ${response.code}"
+                        }
+                    } else {
+                        RuntimeDiagnosticTcp.socket(current.endpoint).use { socket ->
                             synchronized(lock) {
                                 if (session !== current) return@launch
-                                current.call = call
+                                current.socket = socket
                             }
-                            call.execute().use { response ->
-                                if (response.isSuccessful) null else "HTTP ${response.code}"
-                            }
-                        } else {
-                            RuntimeDiagnosticTcp.socket(current.endpoint).use { socket ->
-                                synchronized(lock) {
-                                    if (session !== current) return@launch
-                                    current.socket = socket
-                                }
-                                RuntimeDiagnosticTcp.send(socket, current.endpoint, current.code, body)
-                            }
-                            null
+                            RuntimeDiagnosticTcp.send(socket, current.endpoint, current.code, report.json)
                         }
-                        synchronized(lock) {
-                            if (error == null) {
-                                current.lastSentAt = System.currentTimeMillis()
-                                current.sentCount++
-                            }
-                            current.error = error
-                        }
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (error: Exception) {
-                        // Do not expose a receiver URL, code, response body, or request in logs/UI.
-                        synchronized(lock) { current.error = error.javaClass.simpleName }
-                    } finally {
-                        synchronized(lock) { current.call = null; current.socket = null }
+                        null
                     }
-                    delay(10_000)
+                    synchronized(lock) {
+                        if (session !== current) return@launch
+                        if (error == null) {
+                            queue.acknowledge(report.entries)
+                            current.lastSentAt = System.currentTimeMillis()
+                            current.sentCount++
+                        }
+                        current.error = error
+                    }
+                    if (error == null && queue.size() > 0) continue
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    synchronized(lock) { current.error = error.javaClass.simpleName }
+                } finally {
+                    synchronized(lock) { current.call = null; current.socket = null }
                 }
-                synchronized(lock) { if (session === current) session = null }
+                delay(10_000)
             }
-            return stateLocked()
         }
     }
 
@@ -114,6 +211,9 @@ internal object RuntimeDiagnosticUploader {
             .build())
 
     fun stop(): Map<String, Any?> = synchronized(lock) {
+        savedConnection()?.let {
+            check(AppSecretStore.write(CONNECTION_KEY, gson.toJson(it.copy(enabled = false)))) { "无法保存停止状态" }
+        }
         stopLocked()
         stateLocked()
     }
@@ -121,21 +221,27 @@ internal object RuntimeDiagnosticUploader {
     private fun stopLocked() {
         val previous = session
         session = null
+        collector?.cancel()
+        collector = null
+        logcat?.destroy()
+        logcat = null
         previous?.job?.cancel()
         previous?.call?.cancel()
         runCatching { previous?.socket?.close() }
     }
 
     private fun stateLocked(): Map<String, Any?> {
-        if (session?.let { SystemClock.elapsedRealtime() >= it.deadline } == true) stopLocked()
         val current = session
         return mapOf(
             "active" to (current != null),
             "receiverHost" to current?.endpoint?.host,
-            "remainingSeconds" to current?.let { ((it.deadline - SystemClock.elapsedRealtime()) / 1000).coerceAtLeast(0) },
+            "automatic" to (current != null),
+            "pendingLogs" to (outbox?.size() ?: 0),
+            "droppedLogs" to (outbox?.dropped ?: 0),
+            "captureError" to captureError,
             "lastSentAt" to current?.lastSentAt,
             "sentCount" to (current?.sentCount ?: 0),
-            "error" to current?.error,
+            "error" to (current?.error ?: captureError),
         )
     }
 

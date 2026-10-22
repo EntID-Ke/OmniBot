@@ -48,9 +48,19 @@ class CodexSubscriptionConfigurationTest {
         val mapping = AgentConfigAdapterRegistry.map(input())
         val keys = AcpHarnessAdapters.codex.environmentKeysToUnset(mapping.environment)
         assertTrue(keys.containsAll(listOf("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL")))
-        assertEquals(mapOf("CODEX_HOME" to CODEX_SUBSCRIPTION_HOME, "NO_BROWSER" to "1", "OMNIBOT_CODEX_INCLUDE_HIDDEN_MODELS" to "1"),
+        assertEquals(mapOf("CODEX_HOME" to CODEX_SUBSCRIPTION_HOME, "NO_BROWSER" to "1", "CODEX_PATH" to CODEX_MANAGED_COMMAND),
             AcpHarnessAdapters.codex.environmentOverridesAfterShell(mapping.environment))
         assertTrue(AcpHarnessAdapters.claudeCode.environmentKeysToUnset(mapping.environment).isEmpty())
+    }
+
+    @Test fun bothModesUseTheManagedCliInsteadOfTheAdaptersOlderDependency() {
+        for (mode in CodexAuthMode.entries) {
+            val mapping = AgentConfigAdapterRegistry.map(input().copy(codexAuthMode = mode))
+            assertEquals(CODEX_MANAGED_COMMAND, mapping.environment["CODEX_PATH"])
+            val afterShell = AcpHarnessAdapters.codex.environmentOverridesAfterShell(
+                mapping.environment + ("CODEX_PATH" to "/old/transitive/codex"))
+            assertEquals(CODEX_MANAGED_COMMAND, afterShell["CODEX_PATH"])
+        }
     }
 
     @Test fun switchingBackPreservesTheOriginalApiHomeAndProvider() {

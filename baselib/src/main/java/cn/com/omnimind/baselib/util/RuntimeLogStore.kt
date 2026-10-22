@@ -5,6 +5,7 @@ import com.google.gson.annotations.SerializedName
 import com.google.gson.reflect.TypeToken
 import com.tencent.mmkv.MMKV
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 data class RuntimeLogEntry(
     @field:SerializedName(value = "id", alternate = ["a"])
@@ -36,6 +37,9 @@ data class RuntimeLogEntry(
 }
 
 object RuntimeLogStore {
+    private val observers = ConcurrentHashMap<String, (RuntimeLogEntry) -> Unit>()
+
+    fun observe(owner: String, observer: (RuntimeLogEntry) -> Unit) { observers[owner] = observer }
     private const val TAG = "RuntimeLogStore"
     private const val KEY_RUNTIME_LOGS = "runtime_logs_v1"
     private const val MAX_LOG_COUNT = 200
@@ -47,6 +51,8 @@ object RuntimeLogStore {
 
     @Synchronized
     fun append(entry: RuntimeLogEntry) {
+        // Export observers receive every checkpoint, including local UI noise.
+        observers.values.forEach { observer -> runCatching { observer(entry) } }
         if (entry.isSuppressedRuntimeLogNoise()) return
         val mmkv = MMKV.defaultMMKV() ?: return
         val current = readEntriesLocked(mmkv)

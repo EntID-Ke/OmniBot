@@ -15,6 +15,7 @@ import os
 import secrets
 import shutil
 import socketserver
+import sqlite3
 import ssl
 import struct
 import threading
@@ -33,16 +34,44 @@ def validate_report(raw):
             or not isinstance(report.get("device"), dict)
             or not isinstance(report.get("logs"), list) or len(report["logs"]) > 100):
         raise ValueError("invalid report")
+    if any(not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not 1 <= len(entry["id"]) <= 256 for entry in report["logs"]):
+        raise ValueError("invalid record identity")
 
 
 def save_report(output, raw, lock):
+    """Commit a batch and its new records before acknowledging; replays are idempotent."""
+    report = json.loads(raw)
     with lock:
+        database = output / "logs.sqlite3"
+        with sqlite3.connect(database) as connection:
+            os.chmod(database, 0o600)
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("CREATE TABLE IF NOT EXISTS batches (digest TEXT PRIMARY KEY, received REAL, report TEXT)")
+            connection.execute("CREATE TABLE IF NOT EXISTS logs (sequence INTEGER PRIMARY KEY AUTOINCREMENT, stream TEXT, id TEXT, received REAL, entry TEXT, UNIQUE(stream,id))")
+            received = time.time()
+            connection.execute("INSERT OR IGNORE INTO batches VALUES (?,?,?)", (hashlib.sha256(raw).hexdigest(), received, raw.decode()))
+            for entry in report["logs"]:
+                connection.execute("INSERT OR IGNORE INTO logs(stream,id,received,entry) VALUES (?,?,?,?)",
+                                   (report["sessionId"], entry["id"], received, json.dumps(entry, ensure_ascii=False)))
         temp = output / "latest.json.tmp"
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as stream:
             stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
         temp.replace(output / "latest.json")
         (output / "last-received.txt").write_text(str(time.time()) + "\n")
+
+
+def read_new_logs(output, after=0, limit=1000):
+    """Local inspection only: persist the returned cursor to read just the next records."""
+    database = Path(output) / "logs.sqlite3"
+    if not database.is_file():
+        return []
+    with sqlite3.connect(database) as connection:
+        return [{"sequence": row[0], "streamId": row[1], "receivedAt": row[2], "log": json.loads(row[3])}
+                for row in connection.execute("SELECT sequence,stream,received,entry FROM logs WHERE sequence>? ORDER BY sequence LIMIT ?",
+                                              (after, min(max(limit, 1), 10000)))]
 
 
 def make_tcp_server(bind, port, code, output, cert, key, lifetime=3600):
@@ -52,7 +81,7 @@ def make_tcp_server(bind, port, code, output, cert, key, lifetime=3600):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert, key)
-    deadline = time.monotonic() + lifetime
+    deadline = time.monotonic() + lifetime if lifetime else float("inf")
     write_lock = threading.Lock()
     slots = threading.BoundedSemaphore(8)
 
@@ -130,7 +159,7 @@ def make_tcp_server(bind, port, code, output, cert, key, lifetime=3600):
 def make_server(bind, port, code, output, lifetime=3600, landing=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    deadline = time.monotonic() + lifetime
+    deadline = time.monotonic() + lifetime if lifetime else float("inf")
     write_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -183,8 +212,8 @@ code{{overflow-wrap:anywhere;font-size:12px}}small{{color:#536475}}
 <p>先安装更新，再打开诊断连接。地址和诊断码会自动填好。</p>
 <a href="{entry}/app.apk">1 · 下载已检查的 APK</a>
 <a href="{html.escape(link, quote=True)}">2 · 在 OmniBot 中连接诊断</a>
-<p>进入应用后点“开始采集”，然后复现选模、Agent 或插件问题。
-仅发送经过凭证过滤的应用错误、运行耗时和设备版本信息，20 分钟自动停止。</p>
+<p>连接后自动启用上报，重开应用会自动恢复，然后复现选模、Agent 或插件问题。
+发送经过凭证过滤的本应用各级别日志、运行耗时和设备版本信息，可在应用内停止。</p>
 <small>此链接请勿公开转发。接收器不提供日志读取或远程控制功能。</small>
 <p><small>APK SHA-256</small><br><code>{landing["sha256"]}</code></p></html>'''.encode()
             self.send_response(200)
@@ -229,8 +258,7 @@ code{{overflow-wrap:anywhere;font-size:12px}}small{{color:#536475}}
             except (ValueError, UnicodeError, TimeoutError):
                 self.reply(400)
                 return
-            # A bounded snapshot retains the app's recent log window. User content
-            # never selects a filename, and concurrent uploads replace atomically.
+            # Only acknowledge after durable, idempotent local retention.
             save_report(output, raw, write_lock)
             self.reply(204)
 
@@ -243,6 +271,7 @@ def main():
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--code-file", type=Path, required=True)
+    parser.add_argument("--resume-code", action="store_true", help="Reuse this receiver's private access code after a restart")
     parser.add_argument("--lifetime", type=int, default=3600)
     parser.add_argument("--public-url", help="HTTPS origin used by the private connection page")
     parser.add_argument("--apk", type=Path, help="Only an already-reviewed public APK")
@@ -254,13 +283,17 @@ def main():
     parser.add_argument("--public-address", help="TCP tunnel host:port, including a literal IP if desired")
     args = parser.parse_args()
     os.umask(0o077)
-    if not 60 <= args.lifetime <= 86400:
-        parser.error("lifetime must be between 60 seconds and 24 hours")
+    if args.lifetime != 0 and not 60 <= args.lifetime <= 86400:
+        parser.error("lifetime must be 0 (until stopped) or between 60 seconds and 24 hours")
     args.code_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # Exclusive creation avoids accidentally reviving an old diagnostic session.
-    with args.code_file.open("x") as stream:
-        code = secrets.token_urlsafe(32)
-        stream.write(code + "\n")
+    if args.resume_code:
+        code = args.code_file.read_text().strip()
+        if not 32 <= len(code) <= 128 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for c in code):
+            parser.error("invalid saved access code")
+    else:
+        with args.code_file.open("x") as stream:
+            code = secrets.token_urlsafe(32)
+            stream.write(code + "\n")
     landing = None
     if args.tcp_tls:
         if not all([args.tls_cert, args.tls_key, args.public_address, args.link_file]):
@@ -297,7 +330,8 @@ def main():
               if args.tcp_tls else make_server(args.bind, args.port, code, args.output, args.lifetime, landing))
     timer = threading.Timer(args.lifetime, server.shutdown)
     timer.daemon = True
-    timer.start()
+    if args.lifetime:
+        timer.start()
     print(f"Receiver listening on {args.bind}:{server.server_address[1]}; code saved locally", flush=True)
     try:
         server.serve_forever()

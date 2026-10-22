@@ -77,6 +77,11 @@ for (const filename of cases) {
     no_proxy: `${env.no_proxy || ''},localhost,127.0.0.1,::1`,
     CLAUDE_CONFIG_DIR: join(home, '.claude'), OPENCODE_DISABLE_MODELS_FETCH: 'true',
     ...Object.fromEntries(Object.entries(config.environment).map(([k, v]) => [k, rewrite(v)]))});
+  if (config.harness === 'codex') {
+    assert.equal(config.environment.CODEX_PATH, '/root/.npm-global/bin/codex');
+    // Translate the Android managed executable to this disposable host installation.
+    env.CODEX_PATH = join(bin, 'codex');
+  }
   for (const file of config.files) {
     const path = rewrite(file.path); await mkdir(dirname(path), {recursive: true});
     await writeFile(path, rewrite(file.content), {mode: 0o600});
