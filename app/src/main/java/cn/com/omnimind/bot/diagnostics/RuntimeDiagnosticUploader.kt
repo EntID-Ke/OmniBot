@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Process
 import cn.com.omnimind.baselib.util.AppSecretStore
 import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
 import java.io.File
 import android.os.SystemClock
 import cn.com.omnimind.baselib.util.RuntimeLogEntry
@@ -32,7 +33,12 @@ import java.net.Socket
 internal object RuntimeDiagnosticUploader {
     private const val CONNECTION_KEY = "runtime_diagnostics.connection.v2"
     private val gson = Gson()
-    private data class Connection(val endpoint: String, val code: String, val streamId: String, val enabled: Boolean)
+    private data class Connection(
+        @field:SerializedName("endpoint") val endpoint: String,
+        @field:SerializedName("code") val code: String,
+        @field:SerializedName("streamId") val streamId: String,
+        @field:SerializedName("enabled") val enabled: Boolean,
+    )
     private var directory: File? = null
     private var outbox: RuntimeDiagnosticOutbox? = null
     private var collector: Job? = null
